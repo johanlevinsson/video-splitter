@@ -481,7 +481,7 @@ function Split-VideoFile {
         
         # Add entry for playlist (relative to parent folder)
         $playlistEntries += @{
-            Title = $chapter.Title
+            Title = "$VolumeName - $($chapter.Title)"
             Duration = $duration
             RelativePath = Join-Path $volumeFolder (Join-Path $folderName $fileName)
         }
