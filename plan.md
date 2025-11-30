@@ -84,7 +84,7 @@ video-splitter/
 **Goal:** Parse chapter files reliably
 
 - [x] Create `split-video.ps1` with parameter handling
-- [x] Implement timestamp regex detection (requires colons: `0:00`, `1:23`, `01:23:45`)
+- [x] Implement timestamp regex detection (requires colons: `0:00`, `1:23`, `01:23:45`, or `0` alone)
 - [x] Parse lines with timestamp before or after title
 - [x] Detect header lines (no timestamp = volume name)
 - [x] Convert timestamps to seconds

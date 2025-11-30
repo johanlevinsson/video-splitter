@@ -37,7 +37,7 @@ Process all videos in subfolders:
 
 ## Timestamp File Format
 
-Timestamps must include a colon (e.g., `0:00`, `1:23`, `1:23:45`).
+Timestamps must include a colon (e.g., `0:00`, `1:23`, `1:23:45`), or `0` alone for the start.
 
 **Title first:**
 
