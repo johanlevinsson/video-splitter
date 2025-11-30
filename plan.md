@@ -275,7 +275,7 @@ ffmpeg -i input.mp4 -ss 00:01:13 -t 00:01:32 -c copy output.mp4
 
 ## Future Ideas
 
-- Batch processing multiple videos
+- [x] VLC-compatible playlist (.m3u) with all output clips
 - GUI wrapper (optional)
 - Support for SRT/VTT chapter formats
 - Thumbnail extraction for each segment

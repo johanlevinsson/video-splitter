@@ -42,6 +42,13 @@ param(
     [switch]$Force
 )
 
+# --- Tree Drawing Characters ---
+# Using Unicode box-drawing characters for nice tree output
+$script:TreeBranch = [char]0x251C + [char]0x2500 + [char]0x2500 + " "  # ├── 
+$script:TreeLast   = [char]0x2514 + [char]0x2500 + [char]0x2500 + " "  # └── 
+$script:TreePipe   = [char]0x2502 + "   "                               # │   
+$script:TreeSpace  = "    "                                             #     
+
 # --- Timestamp Parsing Functions ---
 
 function Convert-TimestampToSeconds {
@@ -315,7 +322,8 @@ function Show-Preview {
     
     Write-Host "Structure to be created:" -ForegroundColor Green
     Write-Host "  $parentFolder/" -ForegroundColor White
-    Write-Host "    $volumeFolder/" -ForegroundColor White
+    Write-Host "  $script:TreeBranch" -NoNewline -ForegroundColor DarkGray; Write-Host "playlist.m3u" -ForegroundColor DarkCyan
+    Write-Host "  $script:TreeLast" -NoNewline -ForegroundColor DarkGray; Write-Host "$volumeFolder/" -ForegroundColor White
     
     for ($i = 0; $i -lt $Chapters.Count; $i++) {
         $chapter = $Chapters[$i]
@@ -331,8 +339,13 @@ function Show-Preview {
         $folderName = "{0:D2}. {1}" -f ($i + 1), $safeTitle
         $fileName = "$safeTitle$videoExt"
         
-        Write-Host "      $folderName/" -ForegroundColor Gray
-        Write-Host "          $fileName  " -NoNewline -ForegroundColor DarkGray
+        $isLast = ($i -eq $Chapters.Count - 1)
+        $branch = if ($isLast) { $script:TreeLast } else { $script:TreeBranch }
+        $cont = if ($isLast) { $script:TreeSpace } else { $script:TreePipe }
+        
+        Write-Host "  $script:TreeSpace$branch" -NoNewline -ForegroundColor DarkGray; Write-Host "$folderName/" -ForegroundColor Gray
+        Write-Host "  $script:TreeSpace$cont$script:TreeLast" -NoNewline -ForegroundColor DarkGray
+        Write-Host "$fileName  " -NoNewline -ForegroundColor DarkGray
         Write-Host "[$startStr - $endStr]" -ForegroundColor DarkCyan
     }
     
@@ -373,6 +386,8 @@ function Split-VideoFile {
     <#
     .SYNOPSIS
         Splits a video file into segments based on chapters.
+    .OUTPUTS
+        Hashtable with ParentOutputPath and PlaylistEntries for playlist generation.
     #>
     param(
         [string]$VideoFile,
@@ -388,7 +403,8 @@ function Split-VideoFile {
     $parentFolder = Split-Path (Split-Path $VideoFile -Parent) -Leaf
     
     $volumeFolder = if ($VolumeName) { Get-SafeFilename $VolumeName } else { "chapters" }
-    $baseOutputPath = Join-Path $OutputDir (Join-Path $parentFolder $volumeFolder)
+    $parentOutputPath = Join-Path $OutputDir $parentFolder
+    $baseOutputPath = Join-Path $parentOutputPath $volumeFolder
     
     # Create base output directory
     if (-not (Test-Path $baseOutputPath)) {
@@ -398,6 +414,7 @@ function Split-VideoFile {
     $totalChapters = $Chapters.Count
     $successCount = 0
     $failCount = 0
+    $playlistEntries = @()
     
     Write-Host ""
     Write-Host "Splitting video into $totalChapters segments..." -ForegroundColor Cyan
@@ -461,6 +478,13 @@ function Split-VideoFile {
             Write-Host " FAILED (Error: $_)" -ForegroundColor Red
             $failCount++
         }
+        
+        # Add entry for playlist (relative to parent folder)
+        $playlistEntries += @{
+            Title = $chapter.Title
+            Duration = $duration
+            RelativePath = Join-Path $volumeFolder (Join-Path $folderName $fileName)
+        }
     }
     
     Write-Host ""
@@ -470,6 +494,35 @@ function Split-VideoFile {
         Write-Host "Failed: $failCount" -ForegroundColor Red
     }
     Write-Host "Output: $baseOutputPath" -ForegroundColor Cyan
+    
+    # Return playlist entries and parent output path for caller to generate playlist
+    return @{
+        ParentOutputPath = $parentOutputPath
+        PlaylistEntries = $playlistEntries
+    }
+}
+
+function Write-M3UPlaylist {
+    <#
+    .SYNOPSIS
+        Writes an M3U playlist file from collected entries.
+    #>
+    param(
+        [string]$OutputPath,
+        [array]$Entries
+    )
+    
+    $playlistPath = Join-Path $OutputPath "playlist.m3u"
+    $playlistLines = @("#EXTM3U")
+    
+    foreach ($entry in $Entries) {
+        $playlistLines += "#EXTINF:$($entry.Duration),$($entry.Title)"
+        $playlistLines += $entry.RelativePath
+    }
+    
+    $playlistLines | Out-File -FilePath $playlistPath -Encoding UTF8
+    
+    Write-Host "Playlist: $playlistPath" -ForegroundColor Cyan
 }
 
 # --- Batch Processing Functions ---
@@ -615,34 +668,51 @@ function Show-BatchPreview {
         $volumes = Parse-MultiVolumeChapterFile $pair.TimestampFile.FullName
         $videos = $pair.Videos
         
-        # Match videos to volumes
+        # Always show playlist first
+        Write-Host "  $script:TreeBranch" -NoNewline -ForegroundColor DarkGray; Write-Host "playlist.m3u" -ForegroundColor DarkCyan
+        
+        # Build list of matched volumes to display
+        $matchedVolumes = @()
+        
         if ($videos.Count -eq $volumes.Count) {
             # 1:1 matching by order
             for ($v = 0; $v -lt $videos.Count; $v++) {
-                $video = $videos[$v]
-                $volume = $volumes[$v]
-                $videoExt = [System.IO.Path]::GetExtension($video.Name)
-                $volumeFolder = Get-SafeFilename $volume.VolumeName
-                
-                Write-Host "    $volumeFolder/" -ForegroundColor White
-                
-                for ($c = 0; $c -lt $volume.Chapters.Count; $c++) {
-                    $chapter = $volume.Chapters[$c]
-                    $safeTitle = Get-SafeFilename $chapter.Title
-                    $folderName = "{0:D2}. {1}" -f ($c + 1), $safeTitle
-                    $fileName = "$safeTitle$videoExt"
-                    
-                    Write-Host "      $folderName/" -ForegroundColor Gray
-                    Write-Host "          $fileName" -ForegroundColor DarkGray
+                $matchedVolumes += @{
+                    Video = $videos[$v]
+                    Volume = $volumes[$v]
                 }
             }
         } else {
-            # Show volumes without specific video matching
-            foreach ($volume in $volumes) {
-                $volumeFolder = Get-SafeFilename $volume.VolumeName
-                Write-Host "    $volumeFolder/" -ForegroundColor White
-                Write-Host "      ($($volume.Chapters.Count) chapters)" -ForegroundColor DarkGray
+            # Match by number in filename
+            foreach ($video in $videos) {
+                if ($video.BaseName -match '(\d+)\s*$') {
+                    $videoNum = [int]$Matches[1]
+                    $matchedVolume = $volumes | Where-Object { $_.VolumeName -match "\b$videoNum\b" } | Select-Object -First 1
+                    if ($matchedVolume) {
+                        $matchedVolumes += @{
+                            Video = $video
+                            Volume = $matchedVolume
+                        }
+                    }
+                }
             }
+        }
+        
+        # Display matched volumes with tree structure
+        for ($v = 0; $v -lt $matchedVolumes.Count; $v++) {
+            $match = $matchedVolumes[$v]
+            $video = $match.Video
+            $volume = $match.Volume
+            $videoExt = [System.IO.Path]::GetExtension($video.Name)
+            $volumeFolder = Get-SafeFilename $volume.VolumeName
+            
+            $isLastVolume = ($v -eq $matchedVolumes.Count - 1)
+            $volBranch = if ($isLastVolume) { $script:TreeLast } else { $script:TreeBranch }
+            $volCont = if ($isLastVolume) { $script:TreeSpace } else { $script:TreePipe }
+            
+            Write-Host "  $volBranch" -NoNewline -ForegroundColor DarkGray; Write-Host "$volumeFolder/" -ForegroundColor White
+            Write-Host "  $volCont" -NoNewline -ForegroundColor DarkGray
+            Write-Host "($($volume.Chapters.Count) chapters)" -ForegroundColor DarkGray
         }
         Write-Host ""
     }
@@ -663,6 +733,8 @@ function Invoke-BatchProcess {
     
     foreach ($pair in $Pairs) {
         $folderIndex++
+        $allPlaylistEntries = @()
+        $parentOutputPath = $null
         
         Write-Host ""
         Write-Host "========================================" -ForegroundColor Cyan
@@ -694,11 +766,16 @@ function Invoke-BatchProcess {
                 
                 $videoDuration = Get-VideoDuration $video.FullName
                 
-                Split-VideoFile -VideoFile $video.FullName `
+                $result = Split-VideoFile -VideoFile $video.FullName `
                                 -VideoDuration $videoDuration `
                                 -VolumeName $volume.VolumeName `
                                 -Chapters $volume.Chapters `
                                 -OutputDir $OutputDir
+                
+                if ($result) {
+                    $parentOutputPath = $result.ParentOutputPath
+                    $allPlaylistEntries += $result.PlaylistEntries
+                }
             }
         } else {
             # Try to match by number in filename
@@ -720,11 +797,16 @@ function Invoke-BatchProcess {
                         
                         $videoDuration = Get-VideoDuration $video.FullName
                         
-                        Split-VideoFile -VideoFile $video.FullName `
+                        $result = Split-VideoFile -VideoFile $video.FullName `
                                         -VideoDuration $videoDuration `
                                         -VolumeName $matchedVolume.VolumeName `
                                         -Chapters $matchedVolume.Chapters `
                                         -OutputDir $OutputDir
+                        
+                        if ($result) {
+                            $parentOutputPath = $result.ParentOutputPath
+                            $allPlaylistEntries += $result.PlaylistEntries
+                        }
                     } else {
                         Write-Warning "Could not match $($video.Name) to any volume"
                     }
@@ -732,6 +814,11 @@ function Invoke-BatchProcess {
                     Write-Warning "Could not extract number from $($video.Name)"
                 }
             }
+        }
+        
+        # Write playlist for this folder (all volumes combined)
+        if ($parentOutputPath -and $allPlaylistEntries.Count -gt 0) {
+            Write-M3UPlaylist -OutputPath $parentOutputPath -Entries $allPlaylistEntries
         }
     }
     
@@ -849,9 +936,14 @@ if ($batchMode) {
     }
 
     # Split the video
-    Split-VideoFile -VideoFile $VideoFile `
+    $splitResult = Split-VideoFile -VideoFile $VideoFile `
                     -VideoDuration $videoDuration `
                     -VolumeName $result.VolumeName `
                     -Chapters $result.Chapters `
                     -OutputDir $OutputDir
+    
+    # Write playlist
+    if ($splitResult -and $splitResult.PlaylistEntries.Count -gt 0) {
+        Write-M3UPlaylist -OutputPath $splitResult.ParentOutputPath -Entries $splitResult.PlaylistEntries
+    }
 }

@@ -64,13 +64,18 @@ VOLUME 1
 ```
 output/
 └── Parent Folder Name/
-    └── volume 1/
-        ├── 01. intro/
-        │   └── intro.mp4
-        ├── 02. chapter two/
-        │   └── chapter two.mp4
+    ├── playlist.m3u
+    ├── volume 1/
+    │   ├── 01. intro/
+    │   │   └── intro.mp4
+    │   ├── 02. chapter two/
+    │   │   └── chapter two.mp4
+    │   └── ...
+    └── volume 2/
         └── ...
 ```
+
+A VLC-compatible `playlist.m3u` is generated at the parent folder level, containing all chapters from all volumes.
 
 ## Examples
 
