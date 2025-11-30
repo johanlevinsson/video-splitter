@@ -393,6 +393,7 @@ function Split-VideoFile {
         [string]$VideoFile,
         [int]$VideoDuration,
         [string]$VolumeName,
+        [int]$VolumeIndex = 1,
         [array]$Chapters,
         [string]$OutputDir
     )
@@ -480,8 +481,10 @@ function Split-VideoFile {
         }
         
         # Add entry for playlist (relative to parent folder)
+        $chapterIndex = $i + 1
+        $trackNumber = "{0:D2}-{1:D2}" -f $VolumeIndex, $chapterIndex
         $playlistEntries += @{
-            Title = "$VolumeName - $($chapter.Title)"
+            Title = "$trackNumber. $VolumeName - $($chapter.Title)"
             Duration = $duration
             RelativePath = Join-Path $volumeFolder (Join-Path $folderName $fileName)
         }
@@ -769,6 +772,7 @@ function Invoke-BatchProcess {
                 $result = Split-VideoFile -VideoFile $video.FullName `
                                 -VideoDuration $videoDuration `
                                 -VolumeName $volume.VolumeName `
+                                -VolumeIndex ($v + 1) `
                                 -Chapters $volume.Chapters `
                                 -OutputDir $OutputDir
                 
@@ -800,6 +804,7 @@ function Invoke-BatchProcess {
                         $result = Split-VideoFile -VideoFile $video.FullName `
                                         -VideoDuration $videoDuration `
                                         -VolumeName $matchedVolume.VolumeName `
+                                        -VolumeIndex $videoNum `
                                         -Chapters $matchedVolume.Chapters `
                                         -OutputDir $OutputDir
                         
@@ -939,6 +944,7 @@ if ($batchMode) {
     $splitResult = Split-VideoFile -VideoFile $VideoFile `
                     -VideoDuration $videoDuration `
                     -VolumeName $result.VolumeName `
+                    -VolumeIndex 1 `
                     -Chapters $result.Chapters `
                     -OutputDir $OutputDir
     
