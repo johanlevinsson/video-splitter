@@ -119,8 +119,9 @@ function Test-IsVolumeHeader {
     <#
     .SYNOPSIS
         Tests if a line is a valid volume/disc header.
-        Must contain a keyword (Volume, Disc, Part, etc.) followed by a number.
+        Can be just a number (e.g., "01", "1") or a keyword with number.
     .EXAMPLE
+        Test-IsVolumeHeader "01"            # True (just a number)
         Test-IsVolumeHeader "Volume 1"      # True
         Test-IsVolumeHeader "DISC 2"        # True
         Test-IsVolumeHeader "Part 3"        # True
@@ -128,6 +129,11 @@ function Test-IsVolumeHeader {
         Test-IsVolumeHeader "START TIME"    # False
     #>
     param([string]$Text)
+    
+    # Match just a number (e.g., "01", "1", "12")
+    if ($Text -match '^\d+$') {
+        return $true
+    }
     
     # Match patterns like "Volume 1", "DISC 2", "Part 3", "Vol. 1", "Vol 1"
     return $Text -match '\b(volume|vol\.?|disc|part|section|chapter)\s*\d+\b'
