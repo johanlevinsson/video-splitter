@@ -55,27 +55,54 @@ function Convert-TimestampToSeconds {
     <#
     .SYNOPSIS
         Converts a timestamp string to total seconds.
+        Handles trailing noise like .00 or frame numbers.
     .EXAMPLE
-        Convert-TimestampToSeconds "1:23"    # Returns 83
-        Convert-TimestampToSeconds "1:23:45" # Returns 5025
-        Convert-TimestampToSeconds "45"      # Returns 45
+        Convert-TimestampToSeconds "1:23"       # Returns 83 (1 min 23 sec)
+        Convert-TimestampToSeconds "1:23:45"    # Returns 5025 (1 hr 23 min 45 sec)
+        Convert-TimestampToSeconds "3.48.00"    # Returns 228 (3 min 48 sec, ignores .00)
+        Convert-TimestampToSeconds "1.06.08.00" # Returns 3968 (1 hr 6 min 8 sec)
+        Convert-TimestampToSeconds "25:38:00"   # Returns 1538 (25 min 38 sec, not 25 hours)
+        Convert-TimestampToSeconds "45"         # Returns 45
     #>
     param([string]$Timestamp)
     
-    $parts = $Timestamp -split ':'
+    # Normalize . to : for splitting
+    $normalized = $Timestamp -replace '\.', ':'
+    $parts = $normalized -split ':'
+    
+    # Convert parts to integers
+    $intParts = $parts | ForEach-Object { [int]$_ }
     
     switch ($parts.Count) {
         1 { 
-            # Just seconds: "45"
-            return [int]$parts[0] 
+            # Just seconds or minutes: "45"
+            return $intParts[0]
         }
         2 { 
-            # M:SS or MM:SS: "1:23"
-            return ([int]$parts[0] * 60) + [int]$parts[1] 
+            # M:SS: "1:23", "25:38"
+            return ($intParts[0] * 60) + $intParts[1]
         }
         3 { 
-            # H:MM:SS: "1:23:45"
-            return ([int]$parts[0] * 3600) + ([int]$parts[1] * 60) + [int]$parts[2] 
+            # Could be H:MM:SS or M:SS:frames
+            # Heuristic: if first part is small (likely minutes) and we see patterns like
+            # 37.58.12 (where .12 is frames), treat as M:SS
+            # If first part looks like hours (small number) with valid MM:SS, treat as H:MM:SS
+            # Key insight: in this dataset, H:MM:SS only appears when hours is small (1-2)
+            # and timestamps like 37.58.12 are clearly M:SS with frame noise
+            if ($intParts[0] -gt 23) {
+                # First part > 23, definitely not hours - treat as M:SS (ignore third part)
+                return ($intParts[0] * 60) + $intParts[1]
+            } elseif ($intParts[2] -eq 0) {
+                # Third part is 00 - likely noise, treat as M:SS
+                return ($intParts[0] * 60) + $intParts[1]
+            } else {
+                # Treat as H:MM:SS (small hour value with non-zero seconds)
+                return ($intParts[0] * 3600) + ($intParts[1] * 60) + $intParts[2]
+            }
+        }
+        4 {
+            # H:MM:SS:noise (like 1.06.08.00) - ignore the last part
+            return ($intParts[0] * 3600) + ($intParts[1] * 60) + $intParts[2]
         }
         default { 
             throw "Invalid timestamp format: $Timestamp" 
@@ -159,15 +186,16 @@ function Parse-ChapterLine {
     }
     
     # Regex to find timestamp (whitespace-agnostic)
-    # Patterns with colon: "0:00", "1:23", "01:23", "1:23:45", "01:23:45"
+    # Patterns with colon or dot: "0:00", "1:23", "25:38:00", "3.48.00", "1.06.08.00"
+    # Supports 2-4 parts to handle trailing noise like .00 or frame numbers
     # Special case: "0" alone (whitespace-separated) means 0:00
     
     $timestamp = $null
     $title = $null
     
-    # Match timestamp with colon(s): M:SS, MM:SS, H:MM:SS, HH:MM:SS, H:MM:S
+    # Match timestamp with colon(s) or dot(s): supports 2-4 parts
     # Use first match only (for dual timestamps like "4:52 - 7:23")
-    if ($Line -match '(\d{1,2}:\d{1,2}(?::\d{1,2})?)') {
+    if ($Line -match '(\d{1,2}[:\.](\d{1,2})(?:[:\.](\d{1,2}))?(?:[:\.](\d{1,2}))?)') {
         $timestamp = $Matches[1]
     }
     # Special case: bare "0" at end or start (whitespace-separated) means 0:00
@@ -182,7 +210,8 @@ function Parse-ChapterLine {
     $seconds = Convert-TimestampToSeconds $timestamp
     
     # Remove ALL timestamps from the line to get the title (handles dual timestamps)
-    $title = $Line -replace '\d{1,2}:\d{1,2}(?::\d{1,2})?', ''
+    # Supports both : and . as separators, and 2-4 part timestamps
+    $title = $Line -replace '\d{1,2}[:\.]\d{1,2}(?:[:\.]\d{1,2})?(?:[:\.]\d{1,2})?', ''
     
     # Also remove bare "0" if it was the timestamp (at start or end, whitespace-separated)
     $title = $title -replace '[\t\s]0$', ''
