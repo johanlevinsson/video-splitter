@@ -111,8 +111,26 @@ function Test-IsTimestamp {
     #>
     param([string]$Text)
     
-    # Match patterns: "0", "1:23", "01:23", "1:23:45", "01:23:45"
-    return $Text -match '^\d{1,2}(:\d{2}){0,2}$'
+    # Match patterns: "0", "1:23", "01:23", "1:23:45", "01:23:45", "1:16:0"
+    return $Text -match '^\d{1,2}(:\d{1,2}){0,2}$'
+}
+
+function Test-IsVolumeHeader {
+    <#
+    .SYNOPSIS
+        Tests if a line is a valid volume/disc header.
+        Must contain a keyword (Volume, Disc, Part, etc.) followed by a number.
+    .EXAMPLE
+        Test-IsVolumeHeader "Volume 1"      # True
+        Test-IsVolumeHeader "DISC 2"        # True
+        Test-IsVolumeHeader "Part 3"        # True
+        Test-IsVolumeHeader "Course Content" # False
+        Test-IsVolumeHeader "START TIME"    # False
+    #>
+    param([string]$Text)
+    
+    # Match patterns like "Volume 1", "DISC 2", "Part 3", "Vol. 1", "Vol 1"
+    return $Text -match '\b(volume|vol\.?|disc|part|section|chapter)\s*\d+\b'
 }
 
 function Parse-ChapterLine {
@@ -124,6 +142,7 @@ function Parse-ChapterLine {
         Parse-ChapterLine "Intro To Armbars	0"
         Parse-ChapterLine "1:23 Top Juji Vs Bottom Juji"
         Parse-ChapterLine "2:45 - Central Problems"
+        Parse-ChapterLine "Overview 4:52 - 7:23"  # Dual timestamps - uses first
     #>
     param([string]$Line)
     
@@ -140,8 +159,9 @@ function Parse-ChapterLine {
     $timestamp = $null
     $title = $null
     
-    # Match timestamp with colon(s): M:SS, MM:SS, H:MM:SS, HH:MM:SS
-    if ($Line -match '(\d{1,2}:\d{2}(?::\d{2})?)') {
+    # Match timestamp with colon(s): M:SS, MM:SS, H:MM:SS, HH:MM:SS, H:MM:S
+    # Use first match only (for dual timestamps like "4:52 - 7:23")
+    if ($Line -match '(\d{1,2}:\d{1,2}(?::\d{1,2})?)') {
         $timestamp = $Matches[1]
     }
     # Special case: bare "0" at end or start (whitespace-separated) means 0:00
@@ -155,12 +175,13 @@ function Parse-ChapterLine {
     
     $seconds = Convert-TimestampToSeconds $timestamp
     
-    # Remove the timestamp from the line to get the title
-    $title = $Line -replace [regex]::Escape($timestamp), ''
+    # Remove ALL timestamps from the line to get the title (handles dual timestamps)
+    $title = $Line -replace '\d{1,2}:\d{2}(?::\d{2})?', ''
     
     # Clean up separators and extra whitespace
     $title = $title -replace '^\s*[-–—]\s*', ''  # Leading dash
     $title = $title -replace '\s*[-–—]\s*$', ''  # Trailing dash
+    $title = $title -replace '\s+[-–—]\s+', ' '  # Middle dashes (from dual timestamps)
     $title = $title -replace '\t', ' '           # Tabs to spaces
     $title = $title -replace '\s+', ' '          # Multiple spaces to one
     $title = $title.Trim()
@@ -193,7 +214,6 @@ function Parse-ChapterFile {
     $lines = Get-Content $FilePath -Encoding UTF8
     $volumeName = $null
     $chapters = @()
-    $isFirstNonEmptyLine = $true
     
     foreach ($line in $lines) {
         $trimmedLine = $line.Trim()
@@ -205,20 +225,27 @@ function Parse-ChapterFile {
         $parsed = Parse-ChapterLine $trimmedLine
         
         if ($null -eq $parsed) {
-            # No timestamp found - could be a header
-            if ($isFirstNonEmptyLine -or $null -eq $volumeName) {
+            # No timestamp found - check if it's a valid volume header
+            if (Test-IsVolumeHeader $trimmedLine) {
                 $volumeName = $trimmedLine
             }
-            # Otherwise skip lines without timestamps
+            # Otherwise skip lines without timestamps (e.g., "Course Content", "START TIME")
         } else {
             $chapters += $parsed
         }
-        
-        $isFirstNonEmptyLine = $false
     }
     
     # Sort chapters by timestamp
     $chapters = $chapters | Sort-Object { $_.Seconds }
+    
+    # If first chapter doesn't start at 0:00, add an Intro chapter
+    if ($chapters.Count -gt 0 -and $chapters[0].Seconds -gt 0) {
+        $introChapter = @{
+            Title = "Intro"
+            Seconds = 0
+        }
+        $chapters = @($introChapter) + $chapters
+    }
     
     return @{
         VolumeName = $volumeName
@@ -612,16 +639,24 @@ function Parse-MultiVolumeChapterFile {
         $parsed = Parse-ChapterLine $trimmedLine
         
         if ($null -eq $parsed) {
-            # No timestamp - this is a volume header
-            # Save previous volume if exists
-            if ($null -ne $currentVolume -and $currentChapters.Count -gt 0) {
-                $volumes += @{
-                    VolumeName = $currentVolume
-                    Chapters = $currentChapters | Sort-Object { $_.Seconds }
+            # No timestamp - check if it's a valid volume header
+            if (Test-IsVolumeHeader $trimmedLine) {
+                # Save previous volume if exists
+                if ($null -ne $currentVolume -and $currentChapters.Count -gt 0) {
+                    $sortedChapters = $currentChapters | Sort-Object { $_.Seconds }
+                    # Add Intro chapter if first doesn't start at 0:00
+                    if ($sortedChapters[0].Seconds -gt 0) {
+                        $sortedChapters = @(@{ Title = "Intro"; Seconds = 0 }) + $sortedChapters
+                    }
+                    $volumes += @{
+                        VolumeName = $currentVolume
+                        Chapters = $sortedChapters
+                    }
                 }
+                $currentVolume = $trimmedLine
+                $currentChapters = @()
             }
-            $currentVolume = $trimmedLine
-            $currentChapters = @()
+            # Otherwise skip lines without timestamps (e.g., "Course Content", "START TIME")
         } else {
             $currentChapters += $parsed
         }
@@ -629,17 +664,27 @@ function Parse-MultiVolumeChapterFile {
     
     # Don't forget the last volume
     if ($null -ne $currentVolume -and $currentChapters.Count -gt 0) {
+        $sortedChapters = $currentChapters | Sort-Object { $_.Seconds }
+        # Add Intro chapter if first doesn't start at 0:00
+        if ($sortedChapters[0].Seconds -gt 0) {
+            $sortedChapters = @(@{ Title = "Intro"; Seconds = 0 }) + $sortedChapters
+        }
         $volumes += @{
             VolumeName = $currentVolume
-            Chapters = $currentChapters | Sort-Object { $_.Seconds }
+            Chapters = $sortedChapters
         }
     }
     
     # If no volume headers found, treat entire file as one volume
     if ($volumes.Count -eq 0 -and $currentChapters.Count -gt 0) {
+        $sortedChapters = $currentChapters | Sort-Object { $_.Seconds }
+        # Add Intro chapter if first doesn't start at 0:00
+        if ($sortedChapters[0].Seconds -gt 0) {
+            $sortedChapters = @(@{ Title = "Intro"; Seconds = 0 }) + $sortedChapters
+        }
         $volumes += @{
             VolumeName = "chapters"
-            Chapters = $currentChapters | Sort-Object { $_.Seconds }
+            Chapters = $sortedChapters
         }
     }
     
