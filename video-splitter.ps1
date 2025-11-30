@@ -176,7 +176,11 @@ function Parse-ChapterLine {
     $seconds = Convert-TimestampToSeconds $timestamp
     
     # Remove ALL timestamps from the line to get the title (handles dual timestamps)
-    $title = $Line -replace '\d{1,2}:\d{2}(?::\d{2})?', ''
+    $title = $Line -replace '\d{1,2}:\d{1,2}(?::\d{1,2})?', ''
+    
+    # Also remove bare "0" if it was the timestamp (at start or end, whitespace-separated)
+    $title = $title -replace '[\t\s]0$', ''
+    $title = $title -replace '^0[\t\s]', ''
     
     # Clean up separators and extra whitespace
     $title = $title -replace '^\s*[-–—]\s*', ''  # Leading dash
@@ -511,7 +515,7 @@ function Split-VideoFile {
         $chapterIndex = $i + 1
         $trackNumber = "{0:D2}-{1:D2}" -f $VolumeIndex, $chapterIndex
         $playlistEntries += @{
-            Title = "$trackNumber. $VolumeName - $($chapter.Title)"
+            Title = "$VolumeName - $trackNumber. $($chapter.Title)"
             Duration = $duration
             RelativePath = Join-Path $volumeFolder (Join-Path $folderName $fileName)
         }
