@@ -131,6 +131,54 @@ video-splitter/
 - [x] Show summary of all folders to be processed before starting
 - [x] Report overall progress (folder X of Y)
 
+### Phase 6: Skip Existing Files ✅
+
+**Goal:** Allow incremental re-processing
+
+- [x] Check if output file already exists before processing
+- [x] Show `[SKIP]` indicator in preview for existing files
+- [x] Skip existing files during processing (don't overwrite)
+- [x] Show skip count in summary
+- [x] Delete specific output files and re-run to regenerate only those
+
+### Phase 7: Re-encoding Support 🔲
+
+**Goal:** Allow re-encoding problematic segments
+
+Sometimes stream copy (`-c copy`) produces broken files due to keyframe issues. This phase adds the ability to re-encode specific segments.
+
+- [ ] Add `-Reencode` switch parameter
+- [ ] When enabled, use full re-encoding instead of stream copy
+- [ ] Add `-VideoCodec` parameter (default: `libx264`)
+- [ ] Add `-AudioCodec` parameter (default: `aac`)
+- [ ] Add `-Quality` parameter for CRF value (default: `23`)
+- [ ] Show `[REENCODE]` indicator in preview when flag is set
+- [ ] Combine with skip feature: delete broken files, re-run with `-Reencode`
+
+**Usage workflow for fixing broken segments:**
+
+1. Run initial split (fast, stream copy)
+2. Find broken segments in output
+3. Delete those specific segment folders
+4. Re-run with `-Reencode` flag to regenerate only the deleted segments
+
+**FFmpeg command for re-encoding:**
+
+```powershell
+ffmpeg -i input.mp4 -ss 00:01:13 -t 00:01:32 -c:v libx264 -crf 23 -c:a aac output.mp4
+```
+
+**Parameters:**
+
+```powershell
+.\split-video.ps1
+    -InputDir ".\InputFolder"
+    -Reencode                    # Use re-encoding instead of stream copy
+    -VideoCodec "libx264"        # Optional, video codec (default: libx264)
+    -AudioCodec "aac"            # Optional, audio codec (default: aac)
+    -Quality 23                  # Optional, CRF quality 0-51 (default: 23, lower = better)
+```
+
 **Example:**
 
 ```
@@ -180,9 +228,13 @@ InputFolder/
     -ChapterFile "path\to\chapters.txt"
     -OutputDir "path\to\output"      # Optional, defaults to ./output
     -Force                            # Optional, skip confirmation prompt
+    -Reencode                         # Optional, re-encode instead of stream copy
+    -VideoCodec "libx264"             # Optional, video codec (default: libx264)
+    -AudioCodec "aac"                 # Optional, audio codec (default: aac)
+    -Quality 23                       # Optional, CRF quality 0-51 (default: 23)
 ```
 
-**Note:** Uses stream copy (`-c copy`) for fast splitting. No re-encoding = seconds, not minutes.
+**Note:** By default uses stream copy (`-c copy`) for fast splitting. Use `-Reencode` when segments are broken.
 
 ## Interactive Preview
 
@@ -210,15 +262,23 @@ Proceed? [Y/n]: _
 
 User can review the parsed structure and confirm before any files are created.
 
-## FFmpeg Command
+## FFmpeg Commands
 
-### Stream copy (fast, no re-encoding):
+### Stream copy (fast, no re-encoding) - Default:
 
 ```powershell
 ffmpeg -i input.mp4 -ss 00:01:13 -t 00:01:32 -c copy output.mp4
 ```
 
-**Note:** Cuts at nearest keyframe. May be off by ~0.5-2 seconds, which is acceptable for chapter splits.
+**Note:** Cuts at nearest keyframe. May be off by ~0.5-2 seconds, which is acceptable for chapter splits. Sometimes produces broken files.
+
+### Re-encoding (slower, precise cuts) - With `-Reencode` flag:
+
+```powershell
+ffmpeg -i input.mp4 -ss 00:01:13 -t 00:01:32 -c:v libx264 -crf 23 -c:a aac output.mp4
+```
+
+**Note:** Frame-accurate cuts, fixes broken segments. Takes significantly longer (minutes vs seconds).
 
 ## Implementation Steps
 

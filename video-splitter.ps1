@@ -7,6 +7,9 @@
     then splits the video into separate files organized in folders.
     
     Can process a single video or batch process an entire folder.
+    
+    By default uses stream copy (fast) which cuts at keyframes.
+    Use -Reencode for precise cuts or to fix broken segments.
 
 .PARAMETER VideoFile
     Path to the source video file (single file mode).
@@ -23,11 +26,26 @@
 .PARAMETER Force
     Skip confirmation prompt.
 
+.PARAMETER Reencode
+    Re-encode video instead of stream copy. Slower but fixes broken segments.
+
+.PARAMETER VideoCodec
+    Video codec for re-encoding. Defaults to libx264.
+
+.PARAMETER AudioCodec
+    Audio codec for re-encoding. Defaults to aac.
+
+.PARAMETER Quality
+    CRF quality value for re-encoding (0-51, lower = better). Defaults to 23.
+
 .EXAMPLE
     .\split-video.ps1 -VideoFile "video.mp4" -ChapterFile "chapters.txt"
 
 .EXAMPLE
     .\split-video.ps1 -InputDir ".\Courses" -OutputDir ".\output"
+
+.EXAMPLE
+    .\split-video.ps1 -InputDir ".\Courses" -Reencode -Quality 20
 #>
 
 param(
@@ -39,7 +57,15 @@ param(
     
     [string]$OutputDir = ".\output",
     
-    [switch]$Force
+    [switch]$Force,
+    
+    [switch]$Reencode,
+    
+    [string]$VideoCodec = "libx264",
+    
+    [string]$AudioCodec = "aac",
+    
+    [int]$Quality = 23
 )
 
 # --- Tree Drawing Characters ---
@@ -503,7 +529,11 @@ function Split-VideoFile {
         [string]$VolumeName,
         [int]$VolumeIndex = 1,
         [array]$Chapters,
-        [string]$OutputDir
+        [string]$OutputDir,
+        [bool]$Reencode = $false,
+        [string]$VideoCodec = "libx264",
+        [string]$AudioCodec = "aac",
+        [int]$Quality = 23
     )
     
     $videoExt = [System.IO.Path]::GetExtension($VideoFile)
@@ -526,7 +556,11 @@ function Split-VideoFile {
     $playlistEntries = @()
     
     Write-Host ""
-    Write-Host "Splitting video into $totalChapters segments..." -ForegroundColor Cyan
+    if ($Reencode) {
+        Write-Host "Splitting video into $totalChapters segments (re-encoding with $VideoCodec, CRF $Quality)..." -ForegroundColor Cyan
+    } else {
+        Write-Host "Splitting video into $totalChapters segments (stream copy)..." -ForegroundColor Cyan
+    }
     Write-Host ""
     
     $skipCount = 0
@@ -579,26 +613,89 @@ function Split-VideoFile {
         # Build FFmpeg command
         $ffmpegStart = Convert-SecondsToFFmpegTimestamp $startTime
         
-        $ffmpegArgs = @(
-            "-i", "`"$VideoFile`"",
-            "-ss", $ffmpegStart,
-            "-t", $duration,
-            "-c", "copy",
-            "-avoid_negative_ts", "make_zero",
-            "`"$outputFile`"",
-            "-y"
-        )
+        if ($Reencode) {
+            # Re-encoding mode: slower but precise cuts, fixes broken segments
+            $ffmpegArgs = @(
+                "-i", "`"$VideoFile`"",
+                "-ss", $ffmpegStart,
+                "-t", $duration,
+                "-c:v", $VideoCodec,
+                "-crf", $Quality,
+                "-c:a", $AudioCodec,
+                "-avoid_negative_ts", "make_zero",
+                "-progress", "pipe:1",
+                "-stats_period", "0.5",
+                "`"$outputFile`"",
+                "-y"
+            )
+        } else {
+            # Stream copy mode: fast but cuts at keyframes
+            $ffmpegArgs = @(
+                "-i", "`"$VideoFile`"",
+                "-ss", $ffmpegStart,
+                "-t", $duration,
+                "-c", "copy",
+                "-avoid_negative_ts", "make_zero",
+                "`"$outputFile`"",
+                "-y"
+            )
+        }
         
         # Execute FFmpeg
         try {
-            $process = Start-Process -FilePath "ffmpeg" -ArgumentList $ffmpegArgs -NoNewWindow -Wait -PassThru -RedirectStandardError "NUL"
-            
-            if ($process.ExitCode -eq 0) {
-                Write-Host " OK" -ForegroundColor Green
-                $successCount++
+            if ($Reencode) {
+                # For re-encoding, show progress percentage
+                Write-Host ""
+                
+                $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+                $pinfo.FileName = "ffmpeg"
+                $pinfo.Arguments = $ffmpegArgs -join " "
+                $pinfo.RedirectStandardOutput = $true
+                $pinfo.RedirectStandardError = $true
+                $pinfo.UseShellExecute = $false
+                $pinfo.CreateNoWindow = $true
+                
+                $ffmpegProcess = New-Object System.Diagnostics.Process
+                $ffmpegProcess.StartInfo = $pinfo
+                $ffmpegProcess.Start() | Out-Null
+                
+                $lastPercent = -1
+                while (-not $ffmpegProcess.HasExited) {
+                    $line = $ffmpegProcess.StandardOutput.ReadLine()
+                    if ($line -match '^out_time_ms=(\d+)') {
+                        $currentMs = [long]$Matches[1]
+                        $currentSec = $currentMs / 1000000
+                        $percent = [math]::Min(100, [math]::Floor(($currentSec / $duration) * 100))
+                        if ($percent -ne $lastPercent) {
+                            Write-Host "`r    Encoding: $percent%" -NoNewline -ForegroundColor DarkGray
+                            $lastPercent = $percent
+                        }
+                    }
+                }
+                
+                # Drain remaining output
+                $ffmpegProcess.StandardOutput.ReadToEnd() | Out-Null
+                $ffmpegProcess.StandardError.ReadToEnd() | Out-Null
+                $ffmpegProcess.WaitForExit()
+                
+                if ($ffmpegProcess.ExitCode -eq 0) {
+                    Write-Host "`r    Encoding: 100% - OK       " -ForegroundColor Green
+                    $successCount++
+                } else {
+                    Write-Host "`r    Encoding: FAILED          " -ForegroundColor Red
+                    $failCount++
+                }
             } else {
-                Write-Host " FAILED (FFmpeg error)" -ForegroundColor Red
-                $failCount++
+                # Stream copy - fast, no progress needed
+                $process = Start-Process -FilePath "ffmpeg" -ArgumentList $ffmpegArgs -NoNewWindow -Wait -PassThru -RedirectStandardError "NUL"
+                
+                if ($process.ExitCode -eq 0) {
+                    Write-Host " OK" -ForegroundColor Green
+                    $successCount++
+                } else {
+                    Write-Host " FAILED (FFmpeg error)" -ForegroundColor Red
+                    $failCount++
+                }
             }
         }
         catch {
@@ -951,7 +1048,11 @@ function Invoke-BatchProcess {
                                 -VolumeName $volume.VolumeName `
                                 -VolumeIndex ($v + 1) `
                                 -Chapters $volume.Chapters `
-                                -OutputDir $OutputDir
+                                -OutputDir $OutputDir `
+                                -Reencode $Reencode `
+                                -VideoCodec $VideoCodec `
+                                -AudioCodec $AudioCodec `
+                                -Quality $Quality
                 
                 if ($result) {
                     $parentOutputPath = $result.ParentOutputPath
@@ -983,7 +1084,11 @@ function Invoke-BatchProcess {
                                         -VolumeName $matchedVolume.VolumeName `
                                         -VolumeIndex $videoNum `
                                         -Chapters $matchedVolume.Chapters `
-                                        -OutputDir $OutputDir
+                                        -OutputDir $OutputDir `
+                                        -Reencode $Reencode `
+                                        -VideoCodec $VideoCodec `
+                                        -AudioCodec $AudioCodec `
+                                        -Quality $Quality
                         
                         if ($result) {
                             $parentOutputPath = $result.ParentOutputPath
@@ -1123,7 +1228,11 @@ if ($batchMode) {
                     -VolumeName $result.VolumeName `
                     -VolumeIndex 1 `
                     -Chapters $result.Chapters `
-                    -OutputDir $OutputDir
+                    -OutputDir $OutputDir `
+                    -Reencode $Reencode `
+                    -VideoCodec $VideoCodec `
+                    -AudioCodec $AudioCodec `
+                    -Quality $Quality
     
     # Write playlist
     if ($splitResult -and $splitResult.PlaylistEntries.Count -gt 0) {
