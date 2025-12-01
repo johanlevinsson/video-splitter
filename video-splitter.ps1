@@ -358,6 +358,7 @@ function Show-Preview {
     <#
     .SYNOPSIS
         Displays a preview of what will be created.
+        Shows SKIP for segments where output file already exists.
     #>
     param(
         [string]$VideoFile,
@@ -374,17 +375,47 @@ function Show-Preview {
     # Get parent folder name from video file path
     $parentFolder = Split-Path (Split-Path $VideoFile -Parent) -Leaf
     
+    # Build paths for checking existing files
+    $volumeFolder = if ($VolumeName) { Get-SafeFilename $VolumeName } else { "chapters" }
+    $parentOutputPath = Join-Path $OutputDir $parentFolder
+    $baseOutputPath = Join-Path $parentOutputPath $volumeFolder
+    
+    # Count existing and new segments
+    $existingCount = 0
+    $newCount = 0
+    
+    for ($i = 0; $i -lt $Chapters.Count; $i++) {
+        $chapter = $Chapters[$i]
+        $safeTitle = Get-SafeFilename $chapter.Title
+        $folderName = "{0:D2}. {1}" -f ($i + 1), $safeTitle
+        $fileName = "$safeTitle$videoExt"
+        $chapterFolder = Join-Path $baseOutputPath $folderName
+        $outputFile = Join-Path $chapterFolder $fileName
+        
+        if (Test-Path $outputFile) {
+            $existingCount++
+        } else {
+            $newCount++
+        }
+    }
+    
     Write-Host ""
     Write-Host "=== Video Splitter Preview ===" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Source: " -NoNewline; Write-Host $videoName -ForegroundColor Yellow -NoNewline
     Write-Host " ($durationStr)"
-    Write-Host "Chapters: " -NoNewline; Write-Host "$($Chapters.Count) segments" -ForegroundColor Yellow
+    Write-Host "Chapters: " -NoNewline; Write-Host "$($Chapters.Count) segments" -ForegroundColor Yellow -NoNewline
+    if ($existingCount -gt 0) {
+        Write-Host " (" -NoNewline
+        Write-Host "$newCount new" -ForegroundColor Green -NoNewline
+        Write-Host ", " -NoNewline
+        Write-Host "$existingCount skip" -ForegroundColor DarkYellow -NoNewline
+        Write-Host ")"
+    } else {
+        Write-Host ""
+    }
     Write-Host "Output: " -NoNewline; Write-Host $OutputDir -ForegroundColor Yellow
     Write-Host ""
-    
-    # Build folder name from volume
-    $volumeFolder = if ($VolumeName) { Get-SafeFilename $VolumeName } else { "chapters" }
     
     Write-Host "Structure to be created:" -ForegroundColor Green
     Write-Host "  $parentFolder/" -ForegroundColor White
@@ -405,6 +436,11 @@ function Show-Preview {
         $folderName = "{0:D2}. {1}" -f ($i + 1), $safeTitle
         $fileName = "$safeTitle$videoExt"
         
+        # Check if output file already exists
+        $chapterFolder = Join-Path $baseOutputPath $folderName
+        $outputFile = Join-Path $chapterFolder $fileName
+        $fileExists = Test-Path $outputFile
+        
         $isLast = ($i -eq $Chapters.Count - 1)
         $branch = if ($isLast) { $script:TreeLast } else { $script:TreeBranch }
         $cont = if ($isLast) { $script:TreeSpace } else { $script:TreePipe }
@@ -412,7 +448,13 @@ function Show-Preview {
         Write-Host "  $script:TreeSpace$branch" -NoNewline -ForegroundColor DarkGray; Write-Host "$folderName/" -ForegroundColor Gray
         Write-Host "  $script:TreeSpace$cont$script:TreeLast" -NoNewline -ForegroundColor DarkGray
         Write-Host "$fileName  " -NoNewline -ForegroundColor DarkGray
-        Write-Host "[$startStr - $endStr]" -ForegroundColor DarkCyan
+        Write-Host "[$startStr - $endStr]" -NoNewline -ForegroundColor DarkCyan
+        
+        if ($fileExists) {
+            Write-Host " [SKIP]" -ForegroundColor DarkYellow
+        } else {
+            Write-Host ""
+        }
     }
     
     Write-Host ""
@@ -487,6 +529,8 @@ function Split-VideoFile {
     Write-Host "Splitting video into $totalChapters segments..." -ForegroundColor Cyan
     Write-Host ""
     
+    $skipCount = 0
+    
     for ($i = 0; $i -lt $Chapters.Count; $i++) {
         $chapter = $Chapters[$i]
         $nextChapter = if ($i -lt $Chapters.Count - 1) { $Chapters[$i + 1] } else { $null }
@@ -502,11 +546,6 @@ function Split-VideoFile {
         $chapterFolder = Join-Path $baseOutputPath $folderName
         $outputFile = Join-Path $chapterFolder $fileName
         
-        # Create chapter folder
-        if (-not (Test-Path $chapterFolder)) {
-            New-Item -ItemType Directory -Path $chapterFolder -Force | Out-Null
-        }
-        
         # Progress display
         $progress = $i + 1
         $startStr = Convert-SecondsToTimestamp $startTime
@@ -515,6 +554,27 @@ function Split-VideoFile {
         Write-Host "[${progress}/${totalChapters}] " -NoNewline -ForegroundColor Cyan
         Write-Host "$($chapter.Title) " -NoNewline -ForegroundColor White
         Write-Host "[$startStr - $endStr]" -NoNewline -ForegroundColor DarkGray
+        
+        # Check if output file already exists - skip if it does
+        if (Test-Path $outputFile) {
+            Write-Host " SKIP (exists)" -ForegroundColor DarkYellow
+            $skipCount++
+            
+            # Still add entry for playlist (relative to parent folder)
+            $chapterIndex = $i + 1
+            $trackNumber = "{0:D2}-{1:D2}" -f $VolumeIndex, $chapterIndex
+            $playlistEntries += @{
+                Title = "$VolumeName - $trackNumber. $($chapter.Title)"
+                Duration = $duration
+                RelativePath = Join-Path $volumeFolder (Join-Path $folderName $fileName)
+            }
+            continue
+        }
+        
+        # Create chapter folder
+        if (-not (Test-Path $chapterFolder)) {
+            New-Item -ItemType Directory -Path $chapterFolder -Force | Out-Null
+        }
         
         # Build FFmpeg command
         $ffmpegStart = Convert-SecondsToFFmpegTimestamp $startTime
@@ -559,6 +619,9 @@ function Split-VideoFile {
     Write-Host ""
     Write-Host "=== Complete ===" -ForegroundColor Green
     Write-Host "Success: $successCount / $totalChapters" -ForegroundColor $(if ($successCount -eq $totalChapters) { "Green" } else { "Yellow" })
+    if ($skipCount -gt 0) {
+        Write-Host "Skipped: $skipCount (already exist)" -ForegroundColor DarkYellow
+    }
     if ($failCount -gt 0) {
         Write-Host "Failed: $failCount" -ForegroundColor Red
     }
@@ -798,8 +861,38 @@ function Show-BatchPreview {
             $volCont = if ($isLastVolume) { $script:TreeSpace } else { $script:TreePipe }
             
             Write-Host "  $volBranch" -NoNewline -ForegroundColor DarkGray; Write-Host "$volumeFolder/" -ForegroundColor White
+            
+            # Count existing files for this volume
+            $parentOutputPath = Join-Path $OutputDir $pair.FolderName
+            $baseOutputPath = Join-Path $parentOutputPath $volumeFolder
+            $existingCount = 0
+            $newCount = 0
+            
+            for ($c = 0; $c -lt $volume.Chapters.Count; $c++) {
+                $chapter = $volume.Chapters[$c]
+                $safeTitle = Get-SafeFilename $chapter.Title
+                $folderName = "{0:D2}. {1}" -f ($c + 1), $safeTitle
+                $fileName = "$safeTitle$videoExt"
+                $chapterFolder = Join-Path $baseOutputPath $folderName
+                $outputFile = Join-Path $chapterFolder $fileName
+                
+                if (Test-Path $outputFile) {
+                    $existingCount++
+                } else {
+                    $newCount++
+                }
+            }
+            
             Write-Host "  $volCont" -NoNewline -ForegroundColor DarkGray
-            Write-Host "($($volume.Chapters.Count) chapters)" -ForegroundColor DarkGray
+            if ($existingCount -gt 0) {
+                Write-Host "($($volume.Chapters.Count) chapters: " -NoNewline -ForegroundColor DarkGray
+                Write-Host "$newCount new" -NoNewline -ForegroundColor Green
+                Write-Host ", " -NoNewline -ForegroundColor DarkGray
+                Write-Host "$existingCount skip" -NoNewline -ForegroundColor DarkYellow
+                Write-Host ")" -ForegroundColor DarkGray
+            } else {
+                Write-Host "($($volume.Chapters.Count) chapters)" -ForegroundColor DarkGray
+            }
         }
         Write-Host ""
     }
