@@ -82,6 +82,11 @@ function Convert-TimestampToSeconds {
     .SYNOPSIS
         Converts a timestamp string to total seconds.
         Handles trailing noise like .00 or frame numbers.
+    .PARAMETER Timestamp
+        The timestamp string to convert.
+    .PARAMETER ForceMinutesSeconds
+        If true, interpret 3-part timestamps as MM:SS:frames instead of H:MM:SS.
+        Useful when context indicates the video is short (not hours long).
     .EXAMPLE
         Convert-TimestampToSeconds "1:23"       # Returns 83 (1 min 23 sec)
         Convert-TimestampToSeconds "1:23:45"    # Returns 5025 (1 hr 23 min 45 sec)
@@ -89,8 +94,12 @@ function Convert-TimestampToSeconds {
         Convert-TimestampToSeconds "1.06.08.00" # Returns 3968 (1 hr 6 min 8 sec)
         Convert-TimestampToSeconds "25:38:00"   # Returns 1538 (25 min 38 sec, not 25 hours)
         Convert-TimestampToSeconds "45"         # Returns 45
+        Convert-TimestampToSeconds "16.44.12" -ForceMinutesSeconds  # Returns 1004 (16 min 44 sec)
     #>
-    param([string]$Timestamp)
+    param(
+        [string]$Timestamp,
+        [switch]$ForceMinutesSeconds
+    )
     
     # Normalize . to : for splitting
     $normalized = $Timestamp -replace '\.', ':'
@@ -110,6 +119,10 @@ function Convert-TimestampToSeconds {
         }
         3 { 
             # Could be H:MM:SS or M:SS:frames
+            # If ForceMinutesSeconds is set, always treat as M:SS (ignore third part)
+            if ($ForceMinutesSeconds) {
+                return ($intParts[0] * 60) + $intParts[1]
+            }
             # Heuristic: if first part is small (likely minutes) and we see patterns like
             # 37.58.12 (where .12 is frames), treat as M:SS
             # If first part looks like hours (small number) with valid MM:SS, treat as H:MM:SS
@@ -258,7 +271,72 @@ function Parse-ChapterLine {
     return @{
         Title = $title
         Seconds = $seconds
+        Timestamp = $timestamp  # Preserve original for potential re-parsing
     }
+}
+
+function Repair-MisinterpretedTimestamps {
+    <#
+    .SYNOPSIS
+        Detects and fixes timestamps that were misinterpreted as H:MM:SS when they
+        should have been MM:SS:FF (minutes:seconds:frames).
+    .DESCRIPTION
+        When a 3-part timestamp like "16.44.12" has a first part <= 23 and a non-zero
+        third part, it gets parsed as H:MM:SS (16 hours, 44 minutes, 12 seconds).
+        But if the video is clearly short (other timestamps are in minutes), this is wrong.
+        
+        Detection: If any timestamp is >= 1 hour (3600 seconds) but the median of all
+        timestamps is under 1 hour, those large timestamps are likely misinterpreted.
+        
+        Fix: Re-parse those timestamps with -ForceMinutesSeconds to treat them as MM:SS:FF.
+    .PARAMETER Chapters
+        Array of chapter hashtables with Title, Seconds, and Timestamp properties.
+    .OUTPUTS
+        Corrected array of chapters.
+    #>
+    param([array]$Chapters)
+    
+    if ($Chapters.Count -lt 2) {
+        return $Chapters
+    }
+    
+    # Get all timestamps that are >= 1 hour
+    $oneHour = 3600
+    $largeTimestamps = $Chapters | Where-Object { $_.Seconds -ge $oneHour }
+    
+    if ($largeTimestamps.Count -eq 0) {
+        # No large timestamps, nothing to fix
+        return $Chapters
+    }
+    
+    # Calculate median of all timestamps
+    $sortedSeconds = $Chapters | ForEach-Object { $_.Seconds } | Sort-Object
+    $medianIndex = [int]($sortedSeconds.Count / 2)
+    $medianSeconds = $sortedSeconds[$medianIndex]
+    
+    # If median is >= 1 hour, this might be a genuinely long video - don't fix
+    if ($medianSeconds -ge $oneHour) {
+        return $Chapters
+    }
+    
+    # The video appears to be short (median under 1 hour), but some timestamps are huge
+    # This suggests those timestamps were misinterpreted - re-parse them
+    $repairedChapters = @()
+    foreach ($chapter in $Chapters) {
+        if ($chapter.Seconds -ge $oneHour -and $null -ne $chapter.Timestamp) {
+            # Re-parse with ForceMinutesSeconds
+            $correctedSeconds = Convert-TimestampToSeconds $chapter.Timestamp -ForceMinutesSeconds
+            $repairedChapters += @{
+                Title = $chapter.Title
+                Seconds = $correctedSeconds
+                Timestamp = $chapter.Timestamp
+            }
+        } else {
+            $repairedChapters += $chapter
+        }
+    }
+    
+    return $repairedChapters
 }
 
 function Parse-ChapterFile {
@@ -299,6 +377,11 @@ function Parse-ChapterFile {
             $chapters += $parsed
         }
     }
+    
+    # Validate and fix misinterpreted timestamps
+    # If we detect timestamps that were likely MM:SS:FF interpreted as H:MM:SS,
+    # re-parse them with ForceMinutesSeconds
+    $chapters = Repair-MisinterpretedTimestamps $chapters
     
     # Sort chapters by timestamp
     $chapters = $chapters | Sort-Object { $_.Seconds }
@@ -647,42 +730,30 @@ function Split-VideoFile {
                 # For re-encoding, show progress percentage
                 Write-Host ""
                 
-                $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-                $pinfo.FileName = "ffmpeg"
-                $pinfo.Arguments = $ffmpegArgs -join " "
-                $pinfo.RedirectStandardOutput = $true
-                $pinfo.RedirectStandardError = $true
-                $pinfo.UseShellExecute = $false
-                $pinfo.CreateNoWindow = $true
+                # Use a simpler approach - run FFmpeg and show a spinner
+                # The -progress pipe:1 approach has issues with blocking reads
+                $ffmpegArgsSimple = @(
+                    "-i", "`"$VideoFile`"",
+                    "-ss", $ffmpegStart,
+                    "-t", $duration,
+                    "-c:v", $VideoCodec,
+                    "-crf", $Quality,
+                    "-c:a", $AudioCodec,
+                    "-avoid_negative_ts", "make_zero",
+                    "-stats",
+                    "`"$outputFile`"",
+                    "-y"
+                )
                 
-                $ffmpegProcess = New-Object System.Diagnostics.Process
-                $ffmpegProcess.StartInfo = $pinfo
-                $ffmpegProcess.Start() | Out-Null
+                Write-Host "    Encoding... " -NoNewline -ForegroundColor DarkGray
                 
-                $lastPercent = -1
-                while (-not $ffmpegProcess.HasExited) {
-                    $line = $ffmpegProcess.StandardOutput.ReadLine()
-                    if ($line -match '^out_time_ms=(\d+)') {
-                        $currentMs = [long]$Matches[1]
-                        $currentSec = $currentMs / 1000000
-                        $percent = [math]::Min(100, [math]::Floor(($currentSec / $duration) * 100))
-                        if ($percent -ne $lastPercent) {
-                            Write-Host "`r    Encoding: $percent%" -NoNewline -ForegroundColor DarkGray
-                            $lastPercent = $percent
-                        }
-                    }
-                }
+                $process = Start-Process -FilePath "ffmpeg" -ArgumentList $ffmpegArgsSimple -NoNewWindow -Wait -PassThru -RedirectStandardError "NUL"
                 
-                # Drain remaining output
-                $ffmpegProcess.StandardOutput.ReadToEnd() | Out-Null
-                $ffmpegProcess.StandardError.ReadToEnd() | Out-Null
-                $ffmpegProcess.WaitForExit()
-                
-                if ($ffmpegProcess.ExitCode -eq 0) {
-                    Write-Host "`r    Encoding: 100% - OK       " -ForegroundColor Green
+                if ($process.ExitCode -eq 0) {
+                    Write-Host "OK" -ForegroundColor Green
                     $successCount++
                 } else {
-                    Write-Host "`r    Encoding: FAILED          " -ForegroundColor Red
+                    Write-Host "FAILED" -ForegroundColor Red
                     $failCount++
                 }
             } else {
@@ -842,7 +913,9 @@ function Parse-MultiVolumeChapterFile {
             if (Test-IsVolumeHeader $trimmedLine) {
                 # Save previous volume if exists
                 if ($null -ne $currentVolume -and $currentChapters.Count -gt 0) {
-                    $sortedChapters = $currentChapters | Sort-Object { $_.Seconds }
+                    # Repair any misinterpreted timestamps before sorting
+                    $repairedChapters = Repair-MisinterpretedTimestamps $currentChapters
+                    $sortedChapters = $repairedChapters | Sort-Object { $_.Seconds }
                     # Add Intro chapter if first doesn't start at 0:00
                     if ($sortedChapters[0].Seconds -gt 0) {
                         $sortedChapters = @(@{ Title = "Intro"; Seconds = 0 }) + $sortedChapters
@@ -863,7 +936,9 @@ function Parse-MultiVolumeChapterFile {
     
     # Don't forget the last volume
     if ($null -ne $currentVolume -and $currentChapters.Count -gt 0) {
-        $sortedChapters = $currentChapters | Sort-Object { $_.Seconds }
+        # Repair any misinterpreted timestamps before sorting
+        $repairedChapters = Repair-MisinterpretedTimestamps $currentChapters
+        $sortedChapters = $repairedChapters | Sort-Object { $_.Seconds }
         # Add Intro chapter if first doesn't start at 0:00
         if ($sortedChapters[0].Seconds -gt 0) {
             $sortedChapters = @(@{ Title = "Intro"; Seconds = 0 }) + $sortedChapters
@@ -876,7 +951,9 @@ function Parse-MultiVolumeChapterFile {
     
     # If no volume headers found, treat entire file as one volume
     if ($volumes.Count -eq 0 -and $currentChapters.Count -gt 0) {
-        $sortedChapters = $currentChapters | Sort-Object { $_.Seconds }
+        # Repair any misinterpreted timestamps before sorting
+        $repairedChapters = Repair-MisinterpretedTimestamps $currentChapters
+        $sortedChapters = $repairedChapters | Sort-Object { $_.Seconds }
         # Add Intro chapter if first doesn't start at 0:00
         if ($sortedChapters[0].Seconds -gt 0) {
             $sortedChapters = @(@{ Title = "Intro"; Seconds = 0 }) + $sortedChapters
