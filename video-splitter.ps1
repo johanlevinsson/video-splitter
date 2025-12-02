@@ -814,15 +814,35 @@ function Write-M3UPlaylist {
     
     $playlistPath = Join-Path $OutputPath "playlist.m3u"
     $playlistLines = @("#EXTM3U")
+    $negativeDurations = @()
     
     foreach ($entry in $Entries) {
         $playlistLines += "#EXTINF:$($entry.Duration),$($entry.Title)"
         $playlistLines += $entry.RelativePath
+        
+        # Track negative durations
+        if ($entry.Duration -lt 0) {
+            $negativeDurations += $entry
+        }
     }
     
     $playlistLines | Out-File -FilePath $playlistPath -Encoding UTF8
     
     Write-Host "Playlist: $playlistPath" -ForegroundColor Cyan
+    
+    # Warn about negative durations
+    if ($negativeDurations.Count -gt 0) {
+        Write-Host ""
+        Write-Host "!!! WARNING: NEGATIVE DURATIONS DETECTED !!!" -ForegroundColor Red -BackgroundColor Black
+        Write-Host "The following chapters have timestamps beyond the video duration:" -ForegroundColor Red
+        Write-Host "This usually means the timestamp file doesn't match the video file," -ForegroundColor Red
+        Write-Host "or the video file is corrupted/truncated." -ForegroundColor Red
+        Write-Host ""
+        foreach ($entry in $negativeDurations) {
+            Write-Host "  - $($entry.Title): $($entry.Duration) seconds" -ForegroundColor Yellow
+        }
+        Write-Host ""
+    }
 }
 
 # --- Batch Processing Functions ---
