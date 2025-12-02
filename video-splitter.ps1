@@ -65,7 +65,7 @@ param(
     
     [string]$AudioCodec = "aac",
     
-    [int]$Quality = 23
+    [int]$Quality = 27
 )
 
 # --- Tree Drawing Characters ---
@@ -281,14 +281,15 @@ function Repair-MisinterpretedTimestamps {
         Detects and fixes timestamps that were misinterpreted as H:MM:SS when they
         should have been MM:SS:FF (minutes:seconds:frames).
     .DESCRIPTION
-        When a 3-part timestamp like "16.44.12" has a first part <= 23 and a non-zero
-        third part, it gets parsed as H:MM:SS (16 hours, 44 minutes, 12 seconds).
-        But if the video is clearly short (other timestamps are in minutes), this is wrong.
+        Timestamps in the input file are ALWAYS in chronological order within each volume.
+        If after parsing, a timestamp results in a value that's LESS than the previous one,
+        it means some earlier timestamps were misinterpreted.
         
-        Detection: If any timestamp is >= 1 hour (3600 seconds) but the median of all
-        timestamps is under 1 hour, those large timestamps are likely misinterpreted.
+        Example: If we have [0s, 336s, 60252s, 84816s, 2005s], the jump from 84816 back to 2005
+        indicates that 60252 and 84816 were wrongly parsed (they should be ~1000s and ~1400s).
         
-        Fix: Re-parse those timestamps with -ForceMinutesSeconds to treat them as MM:SS:FF.
+        Strategy: Build the alternative sequence (all timestamps re-parsed with ForceMinutesSeconds).
+        If the original sequence has backwards jumps but the alternative is monotonic, use the alternative.
     .PARAMETER Chapters
         Array of chapter hashtables with Title, Seconds, and Timestamp properties.
     .OUTPUTS
@@ -300,43 +301,50 @@ function Repair-MisinterpretedTimestamps {
         return $Chapters
     }
     
-    # Get all timestamps that are >= 1 hour
-    $oneHour = 3600
-    $largeTimestamps = $Chapters | Where-Object { $_.Seconds -ge $oneHour }
-    
-    if ($largeTimestamps.Count -eq 0) {
-        # No large timestamps, nothing to fix
-        return $Chapters
-    }
-    
-    # Calculate median of all timestamps
-    $sortedSeconds = $Chapters | ForEach-Object { $_.Seconds } | Sort-Object
-    $medianIndex = [int]($sortedSeconds.Count / 2)
-    $medianSeconds = $sortedSeconds[$medianIndex]
-    
-    # If median is >= 1 hour, this might be a genuinely long video - don't fix
-    if ($medianSeconds -ge $oneHour) {
-        return $Chapters
-    }
-    
-    # The video appears to be short (median under 1 hour), but some timestamps are huge
-    # This suggests those timestamps were misinterpreted - re-parse them
-    $repairedChapters = @()
-    foreach ($chapter in $Chapters) {
-        if ($chapter.Seconds -ge $oneHour -and $null -ne $chapter.Timestamp) {
-            # Re-parse with ForceMinutesSeconds
-            $correctedSeconds = Convert-TimestampToSeconds $chapter.Timestamp -ForceMinutesSeconds
-            $repairedChapters += @{
-                Title = $chapter.Title
-                Seconds = $correctedSeconds
-                Timestamp = $chapter.Timestamp
-            }
-        } else {
-            $repairedChapters += $chapter
+    # Check if original sequence has backwards jumps
+    $originalHasBackwardsJump = $false
+    for ($i = 1; $i -lt $Chapters.Count; $i++) {
+        if ($Chapters[$i].Seconds -lt $Chapters[$i - 1].Seconds) {
+            $originalHasBackwardsJump = $true
+            break
         }
     }
     
-    return $repairedChapters
+    if (-not $originalHasBackwardsJump) {
+        # All timestamps are in ascending order - nothing to fix
+        return $Chapters
+    }
+    
+    # Build alternative sequence using ForceMinutesSeconds
+    $alternativeChapters = @()
+    foreach ($chapter in $Chapters) {
+        $altSeconds = $chapter.Seconds
+        if ($null -ne $chapter.Timestamp) {
+            $altSeconds = Convert-TimestampToSeconds $chapter.Timestamp -ForceMinutesSeconds
+        }
+        $alternativeChapters += @{
+            Title = $chapter.Title
+            Seconds = $altSeconds
+            Timestamp = $chapter.Timestamp
+        }
+    }
+    
+    # Check if alternative sequence is monotonically increasing
+    $alternativeIsMonotonic = $true
+    for ($i = 1; $i -lt $alternativeChapters.Count; $i++) {
+        if ($alternativeChapters[$i].Seconds -lt $alternativeChapters[$i - 1].Seconds) {
+            $alternativeIsMonotonic = $false
+            break
+        }
+    }
+    
+    if ($alternativeIsMonotonic) {
+        # Alternative interpretation is correct - use it
+        return $alternativeChapters
+    }
+    
+    # Neither interpretation works cleanly - return original (data quality issue)
+    return $Chapters
 }
 
 function Parse-ChapterFile {

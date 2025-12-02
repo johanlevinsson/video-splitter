@@ -39,36 +39,47 @@ function Repair-MisinterpretedTimestamps {
         return $Chapters
     }
     
-    $oneHour = 3600
-    $largeTimestamps = $Chapters | Where-Object { $_.Seconds -ge $oneHour }
-    
-    if ($largeTimestamps.Count -eq 0) {
-        return $Chapters
-    }
-    
-    $sortedSeconds = $Chapters | ForEach-Object { $_.Seconds } | Sort-Object
-    $medianIndex = [int]($sortedSeconds.Count / 2)
-    $medianSeconds = $sortedSeconds[$medianIndex]
-    
-    if ($medianSeconds -ge $oneHour) {
-        return $Chapters
-    }
-    
-    $repairedChapters = @()
-    foreach ($chapter in $Chapters) {
-        if ($chapter.Seconds -ge $oneHour -and $null -ne $chapter.Timestamp) {
-            $correctedSeconds = Convert-TimestampToSeconds $chapter.Timestamp -ForceMinutesSeconds
-            $repairedChapters += @{
-                Title = $chapter.Title
-                Seconds = $correctedSeconds
-                Timestamp = $chapter.Timestamp
-            }
-        } else {
-            $repairedChapters += $chapter
+    # Check if original sequence has backwards jumps
+    $originalHasBackwardsJump = $false
+    for ($i = 1; $i -lt $Chapters.Count; $i++) {
+        if ($Chapters[$i].Seconds -lt $Chapters[$i - 1].Seconds) {
+            $originalHasBackwardsJump = $true
+            break
         }
     }
     
-    return $repairedChapters
+    if (-not $originalHasBackwardsJump) {
+        return $Chapters
+    }
+    
+    # Build alternative sequence using ForceMinutesSeconds
+    $alternativeChapters = @()
+    foreach ($chapter in $Chapters) {
+        $altSeconds = $chapter.Seconds
+        if ($null -ne $chapter.Timestamp) {
+            $altSeconds = Convert-TimestampToSeconds $chapter.Timestamp -ForceMinutesSeconds
+        }
+        $alternativeChapters += @{
+            Title = $chapter.Title
+            Seconds = $altSeconds
+            Timestamp = $chapter.Timestamp
+        }
+    }
+    
+    # Check if alternative sequence is monotonically increasing
+    $alternativeIsMonotonic = $true
+    for ($i = 1; $i -lt $alternativeChapters.Count; $i++) {
+        if ($alternativeChapters[$i].Seconds -lt $alternativeChapters[$i - 1].Seconds) {
+            $alternativeIsMonotonic = $false
+            break
+        }
+    }
+    
+    if ($alternativeIsMonotonic) {
+        return $alternativeChapters
+    }
+    
+    return $Chapters
 }
 
 function Convert-SecondsToTimestamp {
@@ -133,13 +144,13 @@ Describe "Repair-MisinterpretedTimestamps" {
     # Without repair: 0, 336, 60252 (wrong!), 84816 (wrong!), 2005
     # With repair: 0, 336, 1004, 1413, 2005
     
-    It "Fixes misinterpreted MM.SS.FF timestamps when median is under 1 hour" {
+    It "Fixes misinterpreted MM.SS.FF timestamps when they break chronological order" {
         $chapters = @(
             @{ Title = "Gripping Battle"; Seconds = 0; Timestamp = "0:00" }
             @{ Title = "Passing on Grip"; Seconds = 336; Timestamp = "5.36.00" }
             @{ Title = "Using Shin Pin"; Seconds = 60252; Timestamp = "16.44.12" }  # Wrong: parsed as 16 hours
             @{ Title = "Pommeling"; Seconds = 84816; Timestamp = "23.33.36" }        # Wrong: parsed as 23 hours  
-            @{ Title = "Forcing Half Guard"; Seconds = 2005; Timestamp = "33.25.00" }
+            @{ Title = "Forcing Half Guard"; Seconds = 2005; Timestamp = "33.25.00" }  # This breaks order -> triggers fix
         )
         
         $repaired = Repair-MisinterpretedTimestamps $chapters
@@ -152,6 +163,24 @@ Describe "Repair-MisinterpretedTimestamps" {
         ($repaired | Where-Object { $_.Title -eq "Gripping Battle" }).Seconds | Should Be 0
         ($repaired | Where-Object { $_.Title -eq "Passing on Grip" }).Seconds | Should Be 336
         ($repaired | Where-Object { $_.Title -eq "Forcing Half Guard" }).Seconds | Should Be 2005
+    }
+    
+    It "Does not modify timestamps that are already in chronological order" {
+        # HH:MM:SS format - all in correct ascending order, should not be touched
+        $chapters = @(
+            @{ Title = "Intro"; Seconds = 0; Timestamp = "00:00:00" }
+            @{ Title = "Part 1"; Seconds = 278; Timestamp = "00:04:38" }
+            @{ Title = "Part 2"; Seconds = 3657; Timestamp = "01:00:57" }  # 1 hour mark
+            @{ Title = "Part 3"; Seconds = 4084; Timestamp = "01:08:04" }
+        )
+        
+        $repaired = Repair-MisinterpretedTimestamps $chapters
+        
+        # All should remain unchanged - they're already in order
+        ($repaired | Where-Object { $_.Title -eq "Intro" }).Seconds | Should Be 0
+        ($repaired | Where-Object { $_.Title -eq "Part 1" }).Seconds | Should Be 278
+        ($repaired | Where-Object { $_.Title -eq "Part 2" }).Seconds | Should Be 3657
+        ($repaired | Where-Object { $_.Title -eq "Part 3" }).Seconds | Should Be 4084
     }
     
     It "Does not modify timestamps in genuinely long videos" {
