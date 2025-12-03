@@ -90,9 +90,10 @@ function Convert-TimestampToSeconds {
     .EXAMPLE
         Convert-TimestampToSeconds "1:23"       # Returns 83 (1 min 23 sec)
         Convert-TimestampToSeconds "1:23:45"    # Returns 5025 (1 hr 23 min 45 sec)
-        Convert-TimestampToSeconds "3.48.00"    # Returns 228 (3 min 48 sec, ignores .00)
+        Convert-TimestampToSeconds "00:40:00"   # Returns 2400 (0 hr 40 min 0 sec)
+        Convert-TimestampToSeconds "3.48.00"    # Returns 228 (3 min 48 sec, ignores .00 frame noise)
         Convert-TimestampToSeconds "1.06.08.00" # Returns 3968 (1 hr 6 min 8 sec)
-        Convert-TimestampToSeconds "25:38:00"   # Returns 1538 (25 min 38 sec, not 25 hours)
+        Convert-TimestampToSeconds "25.38.00"   # Returns 1538 (25 min 38 sec, period format with noise)
         Convert-TimestampToSeconds "45"         # Returns 45
         Convert-TimestampToSeconds "16.44.12" -ForceMinutesSeconds  # Returns 1004 (16 min 44 sec)
     #>
@@ -100,6 +101,9 @@ function Convert-TimestampToSeconds {
         [string]$Timestamp,
         [switch]$ForceMinutesSeconds
     )
+    
+    # Check if original uses periods (potential frame noise format) vs colons (standard time)
+    $usesPeriods = $Timestamp -match '\.'
     
     # Normalize . to : for splitting
     $normalized = $Timestamp -replace '\.', ':'
@@ -123,19 +127,20 @@ function Convert-TimestampToSeconds {
             if ($ForceMinutesSeconds) {
                 return ($intParts[0] * 60) + $intParts[1]
             }
-            # Heuristic: if first part is small (likely minutes) and we see patterns like
-            # 37.58.12 (where .12 is frames), treat as M:SS
-            # If first part looks like hours (small number) with valid MM:SS, treat as H:MM:SS
-            # Key insight: in this dataset, H:MM:SS only appears when hours is small (1-2)
-            # and timestamps like 37.58.12 are clearly M:SS with frame noise
+            
+            # Heuristic based on format and values:
+            # - Colon format (00:40:00) is standard time notation → always H:MM:SS
+            # - Period format (25.38.00) with trailing .00 is likely frame noise → M:SS
+            # - First part > 23 means it can't be hours → M:SS
+            
             if ($intParts[0] -gt 23) {
                 # First part > 23, definitely not hours - treat as M:SS (ignore third part)
                 return ($intParts[0] * 60) + $intParts[1]
-            } elseif ($intParts[2] -eq 0) {
-                # Third part is 00 - likely noise, treat as M:SS
+            } elseif ($usesPeriods -and $intParts[2] -eq 0) {
+                # Period format with .00 at end - likely frame noise, treat as M:SS
                 return ($intParts[0] * 60) + $intParts[1]
             } else {
-                # Treat as H:MM:SS (small hour value with non-zero seconds)
+                # Standard colon format or non-zero third part - treat as H:MM:SS
                 return ($intParts[0] * 3600) + ($intParts[1] * 60) + $intParts[2]
             }
         }
@@ -574,6 +579,55 @@ function Show-Preview {
         }
     }
     
+    # Check for problematic clip durations and show warning
+    $problematicClips = @()
+    for ($i = 0; $i -lt $Chapters.Count; $i++) {
+        $chapter = $Chapters[$i]
+        $nextChapter = if ($i -lt $Chapters.Count - 1) { $Chapters[$i + 1] } else { $null }
+        
+        $startTime = $chapter.Seconds
+        $endTime = if ($nextChapter) { $nextChapter.Seconds } else { $VideoDuration }
+        
+        if ($null -ne $endTime) {
+            $duration = $endTime - $startTime
+            if ($duration -lt 20) {
+                $problematicClips += @{
+                    Index = $i + 1
+                    Title = $chapter.Title
+                    Duration = $duration
+                    Issue = "TOO SHORT"
+                }
+            } elseif ($duration -gt 1200) {  # 20 minutes = 1200 seconds
+                $problematicClips += @{
+                    Index = $i + 1
+                    Title = $chapter.Title
+                    Duration = $duration
+                    Issue = "TOO LONG"
+                }
+            }
+        }
+    }
+    
+    if ($problematicClips.Count -gt 0) {
+        Write-Host ""
+        Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
+        Write-Host "!!!                        WARNING                        !!!" -ForegroundColor Red
+        Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "The following clips have unusual durations:" -ForegroundColor Red
+        Write-Host ""
+        foreach ($clip in $problematicClips) {
+            $durationStr = Convert-SecondsToTimestamp $clip.Duration
+            Write-Host "  Clip $($clip.Index): " -NoNewline -ForegroundColor Yellow
+            Write-Host "$($clip.Title)" -NoNewline -ForegroundColor White
+            Write-Host " - $durationStr " -NoNewline -ForegroundColor Yellow
+            Write-Host "[$($clip.Issue)]" -ForegroundColor Red
+        }
+        Write-Host ""
+        Write-Host "Please check your input timestamps for errors!" -ForegroundColor Red
+        Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
+    }
+    
     Write-Host ""
 }
 
@@ -1005,6 +1059,9 @@ function Show-BatchPreview {
         [string]$OutputDir
     )
     
+    # Initialize collection for problematic clips
+    $script:batchProblematicClips = @()
+    
     Write-Host ""
     Write-Host "=== Batch Processing Preview ===" -ForegroundColor Cyan
     Write-Host ""
@@ -1095,7 +1152,49 @@ function Show-BatchPreview {
             } else {
                 Write-Host "($($volume.Chapters.Count) chapters)" -ForegroundColor DarkGray
             }
+            
+            # Track problematic clips for this volume
+            # Note: We don't have video duration here, so we check between chapters only
+            for ($c = 0; $c -lt $volume.Chapters.Count; $c++) {
+                $chapter = $volume.Chapters[$c]
+                $nextChapter = if ($c -lt $volume.Chapters.Count - 1) { $volume.Chapters[$c + 1] } else { $null }
+                
+                if ($null -ne $nextChapter) {
+                    $duration = $nextChapter.Seconds - $chapter.Seconds
+                    if ($duration -lt 20 -or $duration -gt 1200) {
+                        $script:batchProblematicClips += @{
+                            Folder = $pair.FolderName
+                            Volume = $volume.VolumeName
+                            Index = $c + 1
+                            Title = $chapter.Title
+                            Duration = $duration
+                            Issue = if ($duration -lt 20) { "TOO SHORT" } else { "TOO LONG" }
+                        }
+                    }
+                }
+            }
         }
+        Write-Host ""
+    }
+    
+    # Show warning for all problematic clips
+    if ($script:batchProblematicClips.Count -gt 0) {
+        Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
+        Write-Host "!!!                        WARNING                        !!!" -ForegroundColor Red
+        Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "The following clips have unusual durations:" -ForegroundColor Red
+        Write-Host ""
+        foreach ($clip in $script:batchProblematicClips) {
+            $durationStr = Convert-SecondsToTimestamp $clip.Duration
+            Write-Host "  [$($clip.Folder)] $($clip.Volume) - Clip $($clip.Index): " -NoNewline -ForegroundColor Yellow
+            Write-Host "$($clip.Title)" -NoNewline -ForegroundColor White
+            Write-Host " - $durationStr " -NoNewline -ForegroundColor Yellow
+            Write-Host "[$($clip.Issue)]" -ForegroundColor Red
+        }
+        Write-Host ""
+        Write-Host "Please check your input timestamps for errors!" -ForegroundColor Red
+        Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
         Write-Host ""
     }
 }
