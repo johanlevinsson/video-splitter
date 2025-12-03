@@ -25,15 +25,37 @@ Process all videos in subfolders:
 
 ### Parameters
 
-| Parameter      | Required | Description                                 |
-| -------------- | -------- | ------------------------------------------- |
-| `-VideoFile`   | \*       | Path to the video file (single mode)        |
-| `-ChapterFile` | \*       | Path to the timestamp file (single mode)    |
-| `-InputDir`    | \*       | Path to folder with subfolders (batch mode) |
-| `-OutputDir`   | No       | Output directory (default: `.\output`)      |
-| `-Force`       | No       | Skip confirmation prompt                    |
+| Parameter      | Required | Description                                      |
+| -------------- | -------- | ------------------------------------------------ |
+| `-VideoFile`   | \*       | Path to the video file (single mode)             |
+| `-ChapterFile` | \*       | Path to the timestamp file (single mode)         |
+| `-InputDir`    | \*       | Path to folder with subfolders (batch mode)      |
+| `-OutputDir`   | No       | Output directory (default: `.\output`)           |
+| `-Force`       | No       | Skip confirmation prompt                         |
+| `-Reencode`    | No       | Re-encode video instead of stream copy (recommended) |
+| `-VideoCodec`  | No       | Video codec for re-encoding (default: `libx264`) |
+| `-AudioCodec`  | No       | Audio codec for re-encoding (default: `aac`)     |
+| `-Quality`     | No       | CRF quality value 0-51, lower=better (default: 27) |
 
 \* Use either `-VideoFile`/`-ChapterFile` OR `-InputDir`
+
+### Re-encoding (Recommended)
+
+By default, the script uses stream copy (fast) which cuts at keyframes. This can result in:
+- Clips starting a few seconds early
+- Black frames or glitches at the start of clips
+
+**Recommendation:** Use `-Reencode` for precise cuts and clean clips:
+
+```powershell
+.\video-splitter.ps1 -InputDir ".\Courses" -Reencode
+```
+
+For higher quality output (larger files):
+
+```powershell
+.\video-splitter.ps1 -InputDir ".\Courses" -Reencode -Quality 20
+```
 
 ## Timestamp File Format
 
@@ -76,6 +98,13 @@ output/
 ```
 
 A VLC-compatible `playlist.m3u` is generated at the parent folder level, containing all chapters from all volumes.
+
+## Features
+
+- **Automatic Intro chapter**: If the first timestamp doesn't start at 0:00, an "Intro" chapter is automatically added
+- **Duration warnings**: Preview displays a warning if any clips are shorter than 20 seconds or longer than 20 minutes, prompting you to check input timestamps
+- **Skip existing**: Already-processed clips are automatically skipped
+- **Resume support**: Re-run the same command to continue where you left off
 
 ## Examples
 
