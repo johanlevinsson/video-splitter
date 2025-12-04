@@ -106,20 +106,91 @@ $issues = @{
     Info = @()
 }
 
+# Per-course issues for log files
+$courseIssues = @{}
+
 function Add-Issue {
     param(
         [ValidateSet('Critical', 'Warning', 'Info')]
         [string]$Severity,
         [string]$Category,
         [string]$Message,
-        [string]$Path
+        [string]$Path,
+        [string]$CourseName
     )
     
-    $issues[$Severity] += @{
+    $issue = @{
         Category = $Category
         Message = $Message
         Path = $Path
     }
+    
+    $issues[$Severity] += $issue
+    
+    # Also track per-course
+    if ($CourseName) {
+        if (-not $courseIssues.ContainsKey($CourseName)) {
+            $courseIssues[$CourseName] = @{
+                Critical = @()
+                Warning = @()
+                Info = @()
+            }
+        }
+        $courseIssues[$CourseName][$Severity] += $issue
+    }
+}
+
+function Write-CourseLog {
+    param(
+        [string]$CoursePath,
+        [string]$CourseName
+    )
+    
+    $logPath = Join-Path $CoursePath "diagnostics.log"
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logContent = @()
+    $logContent += "Video Splitter Diagnostics - $timestamp"
+    $logContent += "=" * 50
+    $logContent += ""
+    
+    if (-not $courseIssues.ContainsKey($CourseName)) {
+        $logContent += "Status: OK"
+        $logContent += ""
+        $logContent += "No issues found."
+    } else {
+        $ci = $courseIssues[$CourseName]
+        $criticalCount = $ci.Critical.Count
+        $warningCount = $ci.Warning.Count
+        
+        if ($criticalCount -gt 0) {
+            $logContent += "Status: ERRORS FOUND"
+        } else {
+            $logContent += "Status: WARNINGS"
+        }
+        $logContent += ""
+        
+        if ($criticalCount -gt 0) {
+            $logContent += "CRITICAL ISSUES ($criticalCount):"
+            $logContent += "-" * 30
+            foreach ($issue in $ci.Critical) {
+                $logContent += "  [$($issue.Category)] $($issue.Message)"
+                $logContent += "    Path: $($issue.Path)"
+            }
+            $logContent += ""
+        }
+        
+        if ($warningCount -gt 0) {
+            $logContent += "WARNINGS ($warningCount):"
+            $logContent += "-" * 30
+            foreach ($issue in $ci.Warning) {
+                $logContent += "  [$($issue.Category)] $($issue.Message)"
+                $logContent += "    Path: $($issue.Path)"
+            }
+            $logContent += ""
+        }
+    }
+    
+    $logContent | Out-File -FilePath $logPath -Encoding UTF8
 }
 
 # --- Main Diagnostics ---
@@ -156,6 +227,7 @@ $checkedVideos = 0
 foreach ($course in $courseFolders) {
     Write-Host "Checking: $($course.Name)" -ForegroundColor White
     
+    $currentCourseName = $course.Name
     $playlistPath = Join-Path $course.FullName "playlist.m3u"
     
     # --- Check Playlist ---
@@ -163,7 +235,7 @@ foreach ($course in $courseFolders) {
     
     $playlistContent = Get-Content $playlistPath -ErrorAction SilentlyContinue
     if (-not $playlistContent) {
-        Add-Issue -Severity 'Warning' -Category 'Playlist' -Message "Empty playlist file" -Path $playlistPath
+        Add-Issue -Severity 'Warning' -Category 'Playlist' -Message "Empty playlist file" -Path $playlistPath -CourseName $currentCourseName
     } else {
         $lastDuration = $null
         $lastTitle = $null
@@ -182,21 +254,21 @@ foreach ($course in $courseFolders) {
                 $clipName = if ($lastTitle) { $lastTitle } else { $line }
                 
                 if (-not (Test-Path $filePath)) {
-                    Add-Issue -Severity 'Critical' -Category 'Playlist' -Message "Missing file referenced in playlist: $line" -Path $playlistPath
+                    Add-Issue -Severity 'Critical' -Category 'Playlist' -Message "Missing file referenced in playlist: $line" -Path $playlistPath -CourseName $currentCourseName
                 }
                 
                 if ($null -ne $lastDuration) {
                     # Check for negative duration
                     if ($lastDuration -lt 0) {
-                        Add-Issue -Severity 'Critical' -Category 'Playlist' -Message "Negative duration ($(Convert-SecondsToTimestamp $lastDuration)): $clipName" -Path $playlistPath
+                        Add-Issue -Severity 'Critical' -Category 'Playlist' -Message "Negative duration ($(Convert-SecondsToTimestamp $lastDuration)): $clipName" -Path $playlistPath -CourseName $currentCourseName
                     }
                     # Check for very short duration
                     elseif ($lastDuration -lt $MinDuration -and $lastDuration -gt 0) {
-                        Add-Issue -Severity 'Warning' -Category 'Playlist' -Message "Very short clip ($(Convert-SecondsToTimestamp $lastDuration)): $clipName" -Path $playlistPath
+                        Add-Issue -Severity 'Warning' -Category 'Playlist' -Message "Very short clip ($(Convert-SecondsToTimestamp $lastDuration)): $clipName" -Path $playlistPath -CourseName $currentCourseName
                     }
                     # Check for very long duration
                     elseif ($lastDuration -gt $MaxDuration) {
-                        Add-Issue -Severity 'Warning' -Category 'Playlist' -Message "Very long clip ($(Convert-SecondsToTimestamp $lastDuration)): $clipName" -Path $playlistPath
+                        Add-Issue -Severity 'Warning' -Category 'Playlist' -Message "Very long clip ($(Convert-SecondsToTimestamp $lastDuration)): $clipName" -Path $playlistPath -CourseName $currentCourseName
                     }
                 }
                 
@@ -216,7 +288,7 @@ foreach ($course in $courseFolders) {
         $chapterFolders = Get-ChildItem -Path $volume.FullName -Directory | Sort-Object Name
         
         if ($chapterFolders.Count -eq 0) {
-            Add-Issue -Severity 'Warning' -Category 'Structure' -Message "Empty volume folder" -Path $volume.FullName
+            Add-Issue -Severity 'Warning' -Category 'Structure' -Message "Empty volume folder" -Path $volume.FullName -CourseName $currentCourseName
             continue
         }
         
@@ -227,7 +299,7 @@ foreach ($course in $courseFolders) {
             if ($chapter.Name -match '^(\d+)\.') {
                 $num = [int]$Matches[1]
                 if ($num -ne $expectedNum) {
-                    Add-Issue -Severity 'Critical' -Category 'Structure' -Message "Gap in chapter numbering: expected $expectedNum, found $num" -Path $volume.FullName
+                    Add-Issue -Severity 'Critical' -Category 'Structure' -Message "Gap in chapter numbering: expected $expectedNum, found $num" -Path $volume.FullName -CourseName $currentCourseName
                 }
                 $expectedNum = $num + 1
             }
@@ -238,7 +310,7 @@ foreach ($course in $courseFolders) {
             }
             
             if ($videoFiles.Count -eq 0) {
-                Add-Issue -Severity 'Critical' -Category 'Structure' -Message "Empty chapter folder (no video)" -Path $chapter.FullName
+                Add-Issue -Severity 'Critical' -Category 'Structure' -Message "Empty chapter folder (no video)" -Path $chapter.FullName -CourseName $currentCourseName
                 continue
             }
             
@@ -247,11 +319,11 @@ foreach ($course in $courseFolders) {
                 
                 # Check file size
                 if ($video.Length -eq 0) {
-                    Add-Issue -Severity 'Critical' -Category 'File' -Message "Zero-byte video file" -Path $video.FullName
+                    Add-Issue -Severity 'Critical' -Category 'File' -Message "Zero-byte video file" -Path $video.FullName -CourseName $currentCourseName
                     continue
                 }
                 elseif ($video.Length -lt 10KB) {
-                    Add-Issue -Severity 'Critical' -Category 'File' -Message "Very small video file ($([Math]::Round($video.Length / 1KB, 1)) KB)" -Path $video.FullName
+                    Add-Issue -Severity 'Critical' -Category 'File' -Message "Very small video file ($([Math]::Round($video.Length / 1KB, 1)) KB)" -Path $video.FullName -CourseName $currentCourseName
                     continue
                 }
                 
@@ -263,25 +335,25 @@ foreach ($course in $courseFolders) {
                     # Check duration
                     $duration = Get-VideoDuration $video.FullName
                     if ($null -eq $duration) {
-                        Add-Issue -Severity 'Critical' -Category 'Video' -Message "Cannot read video duration (possibly corrupt)" -Path $video.FullName
+                        Add-Issue -Severity 'Critical' -Category 'Video' -Message "Cannot read video duration (possibly corrupt)" -Path $video.FullName -CourseName $currentCourseName
                     }
                     elseif ($duration -lt $MinDuration) {
-                        Add-Issue -Severity 'Warning' -Category 'Video' -Message "Very short video ($(Convert-SecondsToTimestamp ([int]$duration)))" -Path $video.FullName
+                        Add-Issue -Severity 'Warning' -Category 'Video' -Message "Very short video ($(Convert-SecondsToTimestamp ([int]$duration)))" -Path $video.FullName -CourseName $currentCourseName
                     }
                     elseif ($duration -gt $MaxDuration) {
-                        Add-Issue -Severity 'Warning' -Category 'Video' -Message "Very long video ($(Convert-SecondsToTimestamp ([int]$duration)))" -Path $video.FullName
+                        Add-Issue -Severity 'Warning' -Category 'Video' -Message "Very long video ($(Convert-SecondsToTimestamp ([int]$duration)))" -Path $video.FullName -CourseName $currentCourseName
                     }
                     
                     # Check integrity
                     $integrity = Test-VideoIntegrity $video.FullName
                     if (-not $integrity.Success) {
-                        Add-Issue -Severity 'Critical' -Category 'Video' -Message "Video has errors: $($integrity.Errors -join '; ')" -Path $video.FullName
+                        Add-Issue -Severity 'Critical' -Category 'Video' -Message "Video has errors: $($integrity.Errors -join '; ')" -Path $video.FullName -CourseName $currentCourseName
                     }
                     elseif (-not $integrity.HasVideo) {
-                        Add-Issue -Severity 'Critical' -Category 'Video' -Message "No video stream found" -Path $video.FullName
+                        Add-Issue -Severity 'Critical' -Category 'Video' -Message "No video stream found" -Path $video.FullName -CourseName $currentCourseName
                     }
                     elseif (-not $integrity.HasAudio) {
-                        Add-Issue -Severity 'Warning' -Category 'Video' -Message "No audio stream found" -Path $video.FullName
+                        Add-Issue -Severity 'Warning' -Category 'Video' -Message "No audio stream found" -Path $video.FullName -CourseName $currentCourseName
                     }
                 }
             }
@@ -292,9 +364,12 @@ foreach ($course in $courseFolders) {
     $allFiles = Get-ChildItem -Path $course.FullName -Recurse -File
     foreach ($file in $allFiles) {
         if ($file.FullName.Length -gt 260) {
-            Add-Issue -Severity 'Critical' -Category 'File' -Message "Path exceeds 260 characters" -Path $file.FullName
+            Add-Issue -Severity 'Critical' -Category 'File' -Message "Path exceeds 260 characters" -Path $file.FullName -CourseName $currentCourseName
         }
     }
+    
+    # Write log file for this course
+    Write-CourseLog -CoursePath $course.FullName -CourseName $currentCourseName
 }
 
 Write-Progress -Activity "Checking videos" -Completed
