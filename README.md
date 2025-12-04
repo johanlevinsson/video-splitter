@@ -25,23 +25,24 @@ Process all videos in subfolders:
 
 ### Parameters
 
-| Parameter      | Required | Description                                      |
-| -------------- | -------- | ------------------------------------------------ |
-| `-VideoFile`   | \*       | Path to the video file (single mode)             |
-| `-ChapterFile` | \*       | Path to the timestamp file (single mode)         |
-| `-InputDir`    | \*       | Path to folder with subfolders (batch mode)      |
-| `-OutputDir`   | No       | Output directory (default: `.\output`)           |
-| `-Force`       | No       | Skip confirmation prompt                         |
+| Parameter      | Required | Description                                          |
+| -------------- | -------- | ---------------------------------------------------- |
+| `-VideoFile`   | \*       | Path to the video file (single mode)                 |
+| `-ChapterFile` | \*       | Path to the timestamp file (single mode)             |
+| `-InputDir`    | \*       | Path to folder with subfolders (batch mode)          |
+| `-OutputDir`   | No       | Output directory (default: `.\output`)               |
+| `-Force`       | No       | Skip confirmation prompt                             |
 | `-Reencode`    | No       | Re-encode video instead of stream copy (recommended) |
-| `-VideoCodec`  | No       | Video codec for re-encoding (default: `libx264`) |
-| `-AudioCodec`  | No       | Audio codec for re-encoding (default: `aac`)     |
-| `-Quality`     | No       | CRF quality value 0-51, lower=better (default: 27) |
+| `-VideoCodec`  | No       | Video codec for re-encoding (default: `libx264`)     |
+| `-AudioCodec`  | No       | Audio codec for re-encoding (default: `aac`)         |
+| `-Quality`     | No       | CRF quality value 0-51, lower=better (default: 27)   |
 
 \* Use either `-VideoFile`/`-ChapterFile` OR `-InputDir`
 
 ### Re-encoding (Recommended)
 
 By default, the script uses stream copy (fast) which cuts at keyframes. This can result in:
+
 - Clips starting a few seconds early
 - Black frames or glitches at the start of clips
 
