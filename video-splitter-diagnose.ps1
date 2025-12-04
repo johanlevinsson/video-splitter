@@ -165,37 +165,43 @@ foreach ($course in $courseFolders) {
     if (-not $playlistContent) {
         Add-Issue -Severity 'Warning' -Category 'Playlist' -Message "Empty playlist file" -Path $playlistPath
     } else {
-        $extinf = $false
         $lastDuration = $null
+        $lastTitle = $null
         $lineNum = 0
         
         foreach ($line in $playlistContent) {
             $lineNum++
             
-            if ($line -match '^#EXTINF:(-?\d+)') {
-                $extinf = $true
+            if ($line -match '^#EXTINF:(-?\d+),(.*)') {
                 $lastDuration = [int]$Matches[1]
-                
-                # Check for negative duration
-                if ($lastDuration -lt 0) {
-                    Add-Issue -Severity 'Critical' -Category 'Playlist' -Message "Negative duration ($lastDuration) at line $lineNum" -Path $playlistPath
-                }
-                # Check for very short duration
-                elseif ($lastDuration -lt $MinDuration -and $lastDuration -gt 0) {
-                    Add-Issue -Severity 'Warning' -Category 'Playlist' -Message "Very short duration ($(Convert-SecondsToTimestamp $lastDuration)) at line $lineNum" -Path $playlistPath
-                }
-                # Check for very long duration
-                elseif ($lastDuration -gt $MaxDuration) {
-                    Add-Issue -Severity 'Warning' -Category 'Playlist' -Message "Very long duration ($(Convert-SecondsToTimestamp $lastDuration)) at line $lineNum" -Path $playlistPath
-                }
+                $lastTitle = $Matches[2].Trim()
             }
             elseif ($line -notmatch '^#' -and $line.Trim()) {
-                # This is a file path
+                # This is a file path - check the previous EXTINF entry
                 $filePath = Join-Path $course.FullName $line
+                $clipName = if ($lastTitle) { $lastTitle } else { $line }
+                
                 if (-not (Test-Path $filePath)) {
                     Add-Issue -Severity 'Critical' -Category 'Playlist' -Message "Missing file referenced in playlist: $line" -Path $playlistPath
                 }
-                $extinf = $false
+                
+                if ($null -ne $lastDuration) {
+                    # Check for negative duration
+                    if ($lastDuration -lt 0) {
+                        Add-Issue -Severity 'Critical' -Category 'Playlist' -Message "Negative duration ($(Convert-SecondsToTimestamp $lastDuration)): $clipName" -Path $playlistPath
+                    }
+                    # Check for very short duration
+                    elseif ($lastDuration -lt $MinDuration -and $lastDuration -gt 0) {
+                        Add-Issue -Severity 'Warning' -Category 'Playlist' -Message "Very short clip ($(Convert-SecondsToTimestamp $lastDuration)): $clipName" -Path $playlistPath
+                    }
+                    # Check for very long duration
+                    elseif ($lastDuration -gt $MaxDuration) {
+                        Add-Issue -Severity 'Warning' -Category 'Playlist' -Message "Very long clip ($(Convert-SecondsToTimestamp $lastDuration)): $clipName" -Path $playlistPath
+                    }
+                }
+                
+                $lastDuration = $null
+                $lastTitle = $null
             }
         }
     }
