@@ -227,7 +227,7 @@ foreach ($course in $courseFolders) {
             if ($chapter.Name -match '^(\d+)\.') {
                 $num = [int]$Matches[1]
                 if ($num -ne $expectedNum) {
-                    Add-Issue -Severity 'Warning' -Category 'Structure' -Message "Gap in chapter numbering: expected $expectedNum, found $num" -Path $volume.FullName
+                    Add-Issue -Severity 'Critical' -Category 'Structure' -Message "Gap in chapter numbering: expected $expectedNum, found $num" -Path $volume.FullName
                 }
                 $expectedNum = $num + 1
             }
@@ -292,7 +292,7 @@ foreach ($course in $courseFolders) {
     $allFiles = Get-ChildItem -Path $course.FullName -Recurse -File
     foreach ($file in $allFiles) {
         if ($file.FullName.Length -gt 260) {
-            Add-Issue -Severity 'Warning' -Category 'File' -Message "Path exceeds 260 characters (may cause issues)" -Path $file.FullName
+            Add-Issue -Severity 'Critical' -Category 'File' -Message "Path exceeds 260 characters" -Path $file.FullName
         }
     }
 }
