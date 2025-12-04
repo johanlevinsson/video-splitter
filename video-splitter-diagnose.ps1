@@ -216,7 +216,6 @@ foreach ($course in $courseFolders) {
         
         # Check for gaps in numbering
         $expectedNum = 1
-        $chapterNames = @()
         
         foreach ($chapter in $chapterFolders) {
             if ($chapter.Name -match '^(\d+)\.') {
@@ -226,13 +225,6 @@ foreach ($course in $courseFolders) {
                 }
                 $expectedNum = $num + 1
             }
-            
-            # Check for duplicate names (after number prefix)
-            $nameWithoutNum = $chapter.Name -replace '^\d+\.\s*', ''
-            if ($chapterNames -contains $nameWithoutNum) {
-                Add-Issue -Severity 'Warning' -Category 'Structure' -Message "Duplicate chapter name: $nameWithoutNum" -Path $volume.FullName
-            }
-            $chapterNames += $nameWithoutNum
             
             # Check chapter folder contents
             $videoFiles = Get-ChildItem -Path $chapter.FullName -File | Where-Object { 
