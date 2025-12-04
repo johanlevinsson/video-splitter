@@ -292,12 +292,21 @@ foreach ($course in $courseFolders) {
             continue
         }
         
-        # Check for gaps in numbering
+        # Check for gaps and duplicates in numbering
         $expectedNum = 1
+        $seenNumbers = @{}
         
         foreach ($chapter in $chapterFolders) {
             if ($chapter.Name -match '^(\d+)\.') {
                 $num = [int]$Matches[1]
+                
+                # Check for duplicate chapter numbers
+                if ($seenNumbers.ContainsKey($num)) {
+                    Add-Issue -Severity 'Critical' -Category 'Structure' -Message "Duplicate chapter number: $num" -Path $volume.FullName -CourseName $currentCourseName
+                }
+                $seenNumbers[$num] = $true
+                
+                # Check for gaps
                 if ($num -ne $expectedNum) {
                     Add-Issue -Severity 'Critical' -Category 'Structure' -Message "Gap in chapter numbering: expected $expectedNum, found $num" -Path $volume.FullName -CourseName $currentCourseName
                 }
