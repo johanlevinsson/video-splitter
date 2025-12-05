@@ -339,3 +339,172 @@ ffmpeg -i input.mp4 -ss 00:01:13 -t 00:01:32 -c:v libx264 -crf 23 -c:a aac outpu
 - GUI wrapper (optional)
 - Support for SRT/VTT chapter formats
 - Thumbnail extraction for each segment
+
+---
+
+## Phase 8: Simple GUI ✅
+
+**Goal:** Provide a user-friendly graphical interface for non-technical users
+
+### Technology Options
+
+| Option                                    | Pros                                                | Cons                                       |
+| ----------------------------------------- | --------------------------------------------------- | ------------------------------------------ |
+| **WPF (Windows Presentation Foundation)** | Native Windows, modern look, PowerShell integration | Windows-only, more complex XAML            |
+| **Windows Forms**                         | Simple, works well with PowerShell, quick to build  | Dated look, Windows-only                   |
+| **Electron + Node.js**                    | Cross-platform, modern UI                           | Heavy, requires Node.js, separate codebase |
+| **Python + Tkinter**                      | Cross-platform, lightweight                         | Requires Python, separate codebase         |
+
+**Recommendation:** **Windows Forms via PowerShell** - simplest to integrate, same language, no additional dependencies.
+
+### GUI Features (MVP)
+
+#### Main Window Layout
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Video Splitter                                            [_][X]│
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Mode:  ○ Single Video    ● Batch (Folder)                      │
+│                                                                  │
+│  ┌─ Input ────────────────────────────────────────────────────┐ │
+│  │                                                             │ │
+│  │  Video File:    [________________________] [Browse...]      │ │
+│  │  Chapter File:  [________________________] [Browse...]      │ │
+│  │                           - OR -                            │ │
+│  │  Input Folder:  [________________________] [Browse...]      │ │
+│  │                                                             │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                                                                  │
+│  ┌─ Output ───────────────────────────────────────────────────┐ │
+│  │                                                             │ │
+│  │  Output Folder: [________________________] [Browse...]      │ │
+│  │                                                             │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                                                                  │
+│  ┌─ Options ──────────────────────────────────────────────────┐ │
+│  │                                                             │ │
+│  │  ☑ Re-encode video (slower, but precise cuts)              │ │
+│  │                                                             │ │
+│  │  Quality: [====●=====] 27  (lower = better, 18-28 typical) │ │
+│  │                                                             │ │
+│  │  Video Codec: [libx264 ▼]   Audio Codec: [aac ▼]           │ │
+│  │                                                             │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                                                                  │
+│  ┌─ Preview ──────────────────────────────────────────────────┐ │
+│  │                                                             │ │
+│  │  (Click "Preview" to see what will be created)             │ │
+│  │                                                             │ │
+│  │  volume 1/                                                  │ │
+│  │    ├── 01. intro to armbars/                               │ │
+│  │    │       intro to armbars.mp4  [0:00 - 1:13]             │ │
+│  │    ├── 02. top juji vs bottom juji/                        │ │
+│  │    │       top juji vs bottom juji.mp4  [1:13 - 2:45]      │ │
+│  │    └── ...                                                  │ │
+│  │                                                             │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                                                                  │
+│  ┌─ Progress ─────────────────────────────────────────────────┐ │
+│  │                                                             │ │
+│  │  [████████████████░░░░░░░░░░░░░░░░░░░░] 45%                │ │
+│  │  Processing: volume 1 / 05. types of grips.mp4             │ │
+│  │                                                             │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                                                                  │
+│         [  Preview  ]     [  Start  ]     [  Cancel  ]          │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation Tasks
+
+- [ ] Create `video-splitter-gui.ps1` script
+- [ ] Add Windows Forms assembly loading
+- [ ] Build main form layout with controls
+- [ ] Implement file/folder browse dialogs
+- [ ] Wire up mode toggle (single vs batch)
+- [ ] Enable/disable controls based on mode
+- [ ] Connect quality slider to label
+- [ ] Implement Preview button (calls main script parsing logic)
+- [ ] Display preview tree in text box
+- [ ] Implement Start button (runs main script)
+- [ ] Show progress bar and status during processing
+- [ ] Handle Cancel button (stop FFmpeg process)
+- [ ] Add error dialogs for invalid input
+- [ ] Test with various input scenarios
+
+### Code Structure
+
+```powershell
+# video-splitter-gui.ps1
+
+# Load Windows Forms
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# Import functions from main script (dot-source or module)
+. .\video-splitter.ps1 -WhatIf  # Or refactor to module
+
+# Create Form
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Video Splitter"
+$form.Size = New-Object System.Drawing.Size(600, 700)
+$form.StartPosition = "CenterScreen"
+
+# ... controls ...
+
+# Show Form
+$form.ShowDialog()
+```
+
+### Refactoring Required
+
+To support both CLI and GUI, consider:
+
+1. **Extract core functions** into a module (`VideoSplitter.psm1`):
+
+   - `Parse-ChapterFile`
+   - `Get-VideoDuration`
+   - `Split-VideoSegment`
+   - `Show-Preview` (returns data structure, not console output)
+
+2. **Keep CLI script** as thin wrapper calling module functions
+
+3. **GUI script** calls same module functions with visual feedback
+
+### Alternative: Simple Launcher GUI
+
+A minimal approach - just a launcher with file pickers that calls the CLI script:
+
+```
+┌─────────────────────────────────────────────────┐
+│  Video Splitter Launcher                   [X]  │
+├─────────────────────────────────────────────────┤
+│                                                 │
+│  Input Folder:  [__________________] [...]      │
+│  Output Folder: [__________________] [...]      │
+│                                                 │
+│  ☑ Re-encode     Quality: [23]                  │
+│                                                 │
+│             [ Run Video Splitter ]              │
+│                                                 │
+│  ┌─ Output Log ───────────────────────────────┐ │
+│  │ > Starting...                              │ │
+│  │ > Processing folder 1 of 3...              │ │
+│  │ > ...                                      │ │
+│  └────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────┘
+```
+
+This would:
+
+- Launch the CLI script with selected parameters
+- Capture and display output in real-time
+- Less work, leverages existing script
+
+### Decision Needed
+
+**Option A:** Full GUI with integrated preview tree (more work, better UX)
+**Option B:** Simple launcher GUI (quick to build, shows CLI output)
